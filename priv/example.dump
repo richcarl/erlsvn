@@ -1,0 +1,59 @@
+SVN-fs-dump-format-version: 2
+
+UUID: 7bf7a5ef-cabf-0310-b7d4-93df341afa7e
+
+Revision-number: 1422
+Prop-content-length: 80
+Content-length: 80
+
+K 6
+author
+V 7
+sussman
+K 3
+log
+V 33
+Added two files, changed a third.
+PROPS-END
+
+Node-path: bar/baz
+Node-kind: dir
+Node-action: add
+Prop-content-length: 35
+Content-length: 35
+
+K 10
+svn:ignore
+V 4
+TAGS
+PROPS-END
+
+
+Node-path: bar/baz/bop
+Node-kind: file
+Node-action: add
+Prop-content-length: 76
+Text-content-length: 54
+Content-length: 130
+
+K 14
+svn:executable
+V 2
+on
+K 12
+svn:keywords
+V 15
+LastChangedDate
+PROPS-END
+Here is the text of the newly added 'bop' file.
+Whee.
+
+Node-path: bar/foo.c
+Node-kind: file
+Node-action: change
+Text-content-length: 102
+Content-length: 102
+
+Here is the fulltext of my change to an existing /bar/foo.c.
+Notice that this file has no properties.
+
