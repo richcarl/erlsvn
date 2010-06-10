@@ -307,18 +307,20 @@ filter_dump(Infile, Fun) ->
     Outfile = Infile ++ ".filtered",
     Out = open_write(Outfile),
     {ok, Bin} = file:read_file(Infile),
-    filter_dump(Bin, Out, Fun).
+    filter_dump(Bin, Out, Fun),
+    file:close(Out),
+    ok.
 
 filter_dump(Bin, Out, Fun) ->
     case scan_record(Bin) of
 	{{[], [], <<>>}, <<>>} ->
 	    ok;  % ignore trailing empty lines
 	{R, Rest} ->
+	    file:write(Out, format_record(Fun(R))),
 	    case Rest of
 		<<>> ->
 		    ok;
 		_ ->
-		    file:write(Out, format_record(Fun(R))),
 		    filter_dump(Rest, Out, Fun)
 	    end
     end.
@@ -330,18 +332,20 @@ dump_to_terms(Infile) ->
     Outfile = Infile ++ ".terms",
     Out = open_write(Outfile),
     {ok, Bin} = file:read_file(Infile),
-    dump_to_terms(Bin, Out).
+    dump_to_terms(Bin, Out),
+    file:close(Out),
+    ok.
 
 dump_to_terms(Bin, Out) ->
     case scan_record(Bin) of
 	{{[], [], <<>>}, <<>>} ->
 	    ok;  % ignore trailing empty lines
 	{R, Rest} ->
+	    file:write(Out, termify_record(R)),
 	    case Rest of
 		<<>> ->
 		    ok;
 		_ ->
-		    file:write(Out, termify_record(R)),
 		    dump_to_terms(Rest, Out)
 	    end
     end.

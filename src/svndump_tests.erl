@@ -9,6 +9,21 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+transform_test() ->
+    Fun = fun ({Hs, Ps, B}) ->
+		  Hs1 = [case H of
+			     {} -> ok;
+			     _ -> H
+			 end || H <- Hs],
+		  Ps1 = case Ps of
+			    none -> none;
+			    _ -> Ps ++ [{<<"svn:secret">>,<<"blahonga">>}]
+			end,
+		  {Hs1, Ps1, B}
+	  end,
+    svndump:filter_dump("priv/example.dump", Fun).
+
+
 scan_records_file_test() ->
     {ok, Bin} = file:read_file("priv/example.dump"),
     svndump:scan_records(Bin).
