@@ -5,10 +5,10 @@
 %% @copyright 2010 Richard Carlsson
 %% @doc 
 
--module(erlsvn).
+-module(svndump).
 
--export([dump_to_terms/1, scan_records/1, header_vsn/1, header_default/1, header_type/1, header_name/1,
-	 format_records/1, filter_dump/2]).
+-export([dump_to_terms/1, scan_records/1, header_vsn/1, header_default/1,
+	 header_type/1, header_name/1, format_records/1, filter_dump/2]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -111,6 +111,7 @@ scan_node_action(<<"replace">>) -> replace.
 
 scan_integer(B) -> list_to_integer(binary_to_list(B)).
     
+%% @doc Yields the minimum svndump version for a header.
 header_vsn(svn_fs_dump_format_version) -> 1;
 header_vsn(content_length) -> 1;
 header_vsn(node_path) -> 1;
@@ -131,6 +132,7 @@ header_vsn(text_delta_base_sha1) -> 3;
 header_vsn(text_copy_source_sha1) -> 3;
 header_vsn(text_content_sha1) -> 3.
 
+%% @doc Yields the default value for a header.
 header_default(svn_fs_dump_format_version) -> 0;
 header_default(content_length) -> 0;
 header_default(node_path) -> <<>>;
@@ -151,6 +153,7 @@ header_default(text_delta_base_sha1) -> <<>>;
 header_default(text_copy_source_sha1) -> <<>>;
 header_default(text_content_sha1) -> <<>>.
 
+%% @doc Yields the type of value for a header.
 header_type(svn_fs_dump_format_version) -> integer;
 header_type(content_length) -> integer;
 header_type(node_path) -> binary;
@@ -171,6 +174,7 @@ header_type(text_delta_base_sha1) -> binary;
 header_type(text_copy_source_sha1) -> binary;
 header_type(text_content_sha1) -> binary.
 
+%% @doc Yields the name for a header.
 header_name(content_length) -> <<"Content-length">>;
 header_name(node_path) -> <<"Node-path">>;
 header_name(node_kind) -> <<"Node-kind">>;
@@ -237,6 +241,7 @@ scan_data(N, Bin) ->
 	    throw(unexpected_end)
     end.
 
+%% @doc Extracts all svndump records from a binary.
 scan_records(Bin) ->
     scan_records(Bin, []).
 
@@ -296,6 +301,8 @@ open_write(File) ->
     {ok, FD} = file:open(File, [write]),
     FD.
 
+%% @doc Applies a filter function to all records of an SVN dump file. The
+%% new file gets the name of the input file with the suffix ".filtered".
 filter_dump(Infile, Fun) ->
     Outfile = Infile ++ ".filtered",
     Out = open_write(Outfile),
@@ -316,6 +323,9 @@ filter_dump(Bin, Out, Fun) ->
 	    end
     end.
 
+%% @doc Rewrites an SVN dump file to Erlang term format. The new file gets
+%% the name of the input file with the suffix ".terms", and can be read
+%% back using the Erlang standard library function file:consult().
 dump_to_terms(Infile) ->
     Outfile = Infile ++ ".terms",
     Out = open_write(Outfile),
@@ -382,6 +392,7 @@ update_headers([H | Hs], PLen, TLen) ->
 update_headers([], _, _) ->
     [].
 
+%% @doc Formats a list of records for output to an svndump file.
 format_records(Rs) ->
     [format_record(R) || R <- Rs].
 
@@ -440,7 +451,7 @@ lines(Bin, Ls) ->
 %% ---- Unit tests ----
 
 lines_test() ->
-    {ok, Bin} = file:read_file("src/erlsvn.erl"),
+    {ok, Bin} = file:read_file("priv/example.dump"),
     lines(Bin).
 
 record_test() ->
