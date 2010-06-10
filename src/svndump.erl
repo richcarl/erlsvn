@@ -448,7 +448,7 @@ lines(Bin, Ls) ->
             lines(Rest, [L|Ls])
     end.
 
-%% ---- Unit tests ----
+%% ---- Internal unit tests ----
 
 lines_test() ->
     ?assertMatch([<<"">>,<<"a">>,<<"bc">>,<<"">>,<<"def">>,<<"g">>],
@@ -470,36 +470,9 @@ scan_record_test() ->
       none, <<"0123456789">>},
      <<>>} = scan_record(Data2).
 
-scan_records_test() ->
-    Data0 = <<"SVN-fs-dump-format-version: 2\n\nUUID: ABC123\n\n"
-             "Revision-number: 123\nContent-length: 10\n\n0123456789\n">>,
-    [{[{svn_fs_dump_format_version,2}], none, <<>>},
-     {[{uuid,<<"ABC123">>}], none, <<>>},
-     {[{revision_number,123}, {content_length,10}],
-      none, <<"0123456789">>}] = scan_records(Data0).
-
 scan_properties_test() ->
     Data = <<"K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
 	    "Added two files, changed a third.\nPROPS-END\n">>,
     [{<<"author">>,<<"sussman">>},
      {<<"log">>,<<"Added two files, changed a third.">>}
     ] = scan_properties(Data).
-
-scan_records_with_properties_test() ->
-    Data = <<"SVN-fs-dump-format-version: 2\n\nUUID: ABC123\n\n"
-	    "Revision-number: 123\nProp-content-length: 80\n"
-	    "Content-length: 80\n\n"
-	    "K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
-	    "Added two files, changed a third.\nPROPS-END\n\n">>,
-    [{[{svn_fs_dump_format_version,2}], none, <<>>},
-     {[{uuid,<<"ABC123">>}], none, <<>>},
-     {[{revision_number,123},
-       {prop_content_length,80},
-       {content_length,80}],
-      [{<<"author">>, <<"sussman">>},
-       {<<"log">>, <<"Added two files, changed a third.">>}],
-       <<>>}] = scan_records(Data).
-
-scan_records_file_test() ->
-    {ok, Bin} = file:read_file("priv/example.dump"),
-    scan_records(Bin).
