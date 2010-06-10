@@ -1,9 +1,9 @@
 %% ---------------------------------------------------------------------
-%% File: erlsvn.erl
+%% File: svndump.erl
 %%
 %% @author Richard Carlsson <richardc@klarna.com>
 %% @copyright 2010 Richard Carlsson
-%% @doc 
+%% @doc Functions for working with SVN dumpfiles.
 
 -module(svndump).
 
