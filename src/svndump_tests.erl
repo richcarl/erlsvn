@@ -9,17 +9,14 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-include("svndump.hrl").
+
 transform_test() ->
-    Fun = fun ({Hs, Ps, B}) ->
-		  Hs1 = [case H of
-			     {} -> ok;
-			     _ -> H
-			 end || H <- Hs],
-		  Ps1 = case Ps of
-			    none -> none;
-			    _ -> Ps ++ [{<<"svn:secret">>,<<"blahonga">>}]
-			end,
-		  {Hs1, Ps1, B}
+    Fun = fun (Rec=#change{properties = Ps}) ->
+		  Ps1 = Ps ++ [{<<"svn:secret">>,<<"blahonga">>}],
+		  Rec#change{properties = Ps1};
+	      (Other) ->
+		  Other
 	  end,
     svndump:filter_dump("priv/example.dump", Fun).
 
@@ -34,19 +31,18 @@ scan_records_with_properties_test() ->
 	    "Content-length: 80\n\n"
 	    "K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
 	    "Added two files, changed a third.\nPROPS-END\n\n">>,
-    [{[{svn_fs_dump_format_version,2}], none, <<>>},
-     {[{uuid,<<"ABC123">>}], none, <<>>},
-     {[{revision_number,123},
-       {prop_content_length,80},
-       {content_length,80}],
-      [{<<"author">>, <<"sussman">>},
-       {<<"log">>, <<"Added two files, changed a third.">>}],
-       <<>>}] = svndump:scan_records(Data).
+    [#version{number = 2},
+     #uuid{id = <<"ABC123">>},
+     #revision{number = 123,
+	       properties =
+	       [{<<"author">>, <<"sussman">>},
+		{<<"log">>, <<"Added two files, changed a third.">>}]}
+    ] = svndump:scan_records(Data).
 
 scan_records_test() ->
-    Data0 = <<"SVN-fs-dump-format-version: 2\n\nUUID: ABC123\n\n"
-             "Revision-number: 123\nContent-length: 10\n\n0123456789\n">>,
-    [{[{svn_fs_dump_format_version,2}], none, <<>>},
-     {[{uuid,<<"ABC123">>}], none, <<>>},
-     {[{revision_number,123}, {content_length,10}],
-      none, <<"0123456789">>}] = svndump:scan_records(Data0).
+    Data = <<"SVN-fs-dump-format-version: 2\n\nUUID: ABC123\n\n"
+	    "Revision-number: 123\nProp-content-length: 10\n"
+	    "Content-length: 10\n\nPROPS-END\n\n">>,
+    [#version{number = 2},
+     #uuid{id = <<"ABC123">>},
+     #revision{number = 123}] = svndump:scan_records(Data).

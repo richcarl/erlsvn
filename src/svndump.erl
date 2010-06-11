@@ -12,6 +12,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-include("svndump.hrl").
+
 %% File format versions:
 %%  1 - svn pre-0.18.0
 %%  2 - svn 0.18.0
@@ -269,33 +271,62 @@ scan_record(Bin, Hs) ->
         {<<>>, Rest} when Hs =:= [], Rest =/= <<>> ->
 	    scan_record(Rest, Hs);  %% skip leading empty lines
         {<<>>, Rest} ->
-	    %% If the record has content, the last header is Content-length
-	    case Hs of
-		[{content_length, Length}|Hs1] ->
-		    {Data, Rest1} = scan_nldata(Length, Rest),
-		    %% If there are properties, there should be a
-		    %% Prop-content-length header somewhere.
-		    case get_prop_content(Hs1) of
-			none ->
-			    {{lists:reverse(Hs), none, Data}, Rest1};
-			PLen ->
-			    {PData, TData} = scan_data(PLen, Data),
-			    ?assertEqual(byte_size(PData), PLen),
-			    ?assertEqual(PLen + byte_size(TData), Length),
-			    {{lists:reverse(Hs),
-			      scan_properties(PData),
-			      TData}, Rest1}
-		    end;
-		_ ->
-		    {{lists:reverse(Hs), none, <<>>}, Rest}
-	    end;
+	    make_record(Hs, [], none, [], none, Rest);
         {Line, Rest} ->
             scan_record(Rest, [scan_header(Line) | Hs])
     end.
 
-get_prop_content([{prop_content_length, PLen}|_]) -> PLen;
-get_prop_content([_|Hs]) -> get_prop_content(Hs);
-get_prop_content([]) -> none.
+%% The header list is here in reverse-occurrence order
+make_record([{uuid, Id}], [], _R, [], none, Rest) ->
+    {#uuid{id = Id}, Rest};
+make_record([{svn_fs_dump_format_version, N}], [], _R, [], none, Rest) ->
+    {#version{number = N}, Rest};
+make_record([{content_length, Length} | Hs], [], R, [], none, Rest) ->
+    %% If the record has any content, the last header is Content-length
+    {Data, Rest1} = scan_nldata(Length, Rest),
+    ?assertEqual(byte_size(Data), Length),
+    make_record(Hs, [], R, [], Data, Rest1);
+make_record([{prop_content_length, PLen} | Hs], Hs1, R, [], Data, Rest)
+  when is_binary(Data) ->
+    %% If there are properties, there should be a Prop-content-length and
+    %% we must have seen a Content-length so we have extracted the content
+    {PData, TData} = scan_data(PLen, Data),
+    ?assertEqual(byte_size(PData), PLen),
+    ?assertEqual(PLen + byte_size(TData), byte_size(Data)),
+    Ps = scan_properties(PData),
+    make_record(Hs, Hs1, R, Ps, TData, Rest);
+make_record([{text_content_length, _} | Hs], Hs1, R, Ps, Data, Rest)
+  when is_binary(Data) ->
+    %% Discard this header - will be computed on output
+    make_record(Hs, Hs1, R, Ps, Data, Rest);
+make_record([{node_path, Path} | Hs], Hs1, #change{path=undefined}=R, Ps,
+	    Data, Rest) ->
+    make_record(Hs, Hs1, R#change{path=Path}, Ps, Data, Rest);
+make_record([{node_path, Path} | Hs], Hs1, none, Ps, Data, Rest) ->
+    make_record(Hs, Hs1, #change{path=Path}, Ps, Data, Rest);
+make_record([{node_kind, Kind} | Hs], Hs1, #change{kind=undefined}=R, Ps,
+	    Data, Rest) ->
+    make_record(Hs, Hs1, R#change{kind=Kind}, Ps, Data, Rest);
+make_record([{node_kind, Kind} | Hs], Hs1, none, Ps, Data, Rest) ->
+    make_record(Hs, Hs1, #change{kind=Kind}, Ps, Data, Rest);
+make_record([{node_action, Action} | Hs], Hs1, #change{action=undefined}=R,
+	    Ps, Data, Rest) ->
+    make_record(Hs, Hs1, R#change{action=Action}, Ps, Data, Rest);
+make_record([{node_action, Action} | Hs], Hs1, none, Ps, Data, Rest) ->
+    make_record(Hs, Hs1, #change{action=Action}, Ps, Data, Rest);
+make_record([{revision_number, N} | Hs], Hs1, #revision{number=undefined}=R,
+	    Ps, Data, Rest) ->
+    make_record(Hs, Hs1, R#revision{number=N}, Ps, Data, Rest);
+make_record([{revision_number, N} | Hs], Hs1, none, Ps, Data, Rest) ->
+    make_record(Hs, Hs1, #revision{number=N}, Ps, Data, Rest);
+make_record([H | Hs], Hs1, R, Ps, Data, Rest) ->
+    make_record(Hs, [H | Hs1], R, Ps, Data, Rest);
+make_record([], [], R=#revision{}, Ps, <<>>, Rest) ->
+    {R#revision{properties=Ps}, Rest};
+make_record([], Hs1, R=#change{}, Ps, Data, Rest) ->
+    {R#change{headers=Hs1, properties=Ps, data=Data}, Rest};
+make_record([], Hs1, R, Ps, Data, _Rest) ->
+    throw({unknown_record, {Hs1, R, Ps, Data}}).
 
 open_write(File) ->
     {ok, FD} = file:open(File, [write]),
@@ -341,7 +372,7 @@ dump_to_terms(Bin, Out) ->
 	{{[], [], <<>>}, <<>>} ->
 	    ok;  % ignore trailing empty lines
 	{R, Rest} ->
-	    file:write(Out, termify_record(R)),
+	    io:format(Out, "~p.\n", [R]),
 	    case Rest of
 		<<>> ->
 		    ok;
@@ -350,68 +381,42 @@ dump_to_terms(Bin, Out) ->
 	    end
     end.
 
-termify_record({Hs, Ps, B}) ->
-    [<<"{[">>,
-     termify_headers(Hs),
-     <<"],\n [">>,
-     termify_props(Ps),
-     <<"],\n ">>,
-     termify_bin(B),
-     <<"}.\n">>].
-
-termify_headers([]) ->
-    <<"<<>>">>;
-termify_headers([H|Hs]) ->
-    [termify_header(H), [[<<",\n  ">>, termify_header(H1)] || H1 <- Hs]].
-
-termify_header({Name, Value}) ->
-    V = if is_integer(Value) ->
-		integer_to_list(Value);
-	   is_atom(Value) ->
-		atom_to_list(Value);
-	   is_binary(Value) ->
-		termify_bin(Value)
-	end,
-    [<<"{">>, atom_to_list(Name), <<", ">>, V, <<"}">>].
-
-termify_props([]) ->
-    <<"<<>>">>;
-termify_props([P|Ps]) ->
-    [termify_prop(P), [[<<",\n  ">>, termify_prop(P1)] || P1 <- Ps]].
-
-termify_prop({Name, Value}) ->
-    [<<"{">>, termify_bin(Name), <<", ">>, termify_bin(Value), <<"}">>].
-
-termify_bin(B) ->
-     io_lib:format("~p",[B]).
-
-update_headers([{content_length, _} | Hs], PLen, TLen) ->
-    [{content_length, PLen + TLen} | update_headers(Hs, PLen, TLen)];
-update_headers([{prop_content_length, _} | Hs], PLen, TLen) ->
-    [{prop_content_length, PLen} | update_headers(Hs, PLen, TLen)];
-update_headers([{text_content_length, _} | Hs], PLen, TLen) ->
-    [{text_content_length, TLen} | update_headers(Hs, PLen, TLen)];
-update_headers([H | Hs], PLen, TLen) ->
-    [H | update_headers(Hs, PLen, TLen)];
-update_headers([], _, _) ->
-    [].
-
 %% @doc Formats a list of records for output to an svndump file.
 format_records(Rs) ->
     [format_record(R) || R <- Rs].
 
-format_record({Hs, none, Text}) ->
-    Hs1 = update_headers(Hs, 0, byte_size(Text)),
-    [format_headers(Hs1), $\n, Text, $\n];
-format_record({Hs, Ps, Text}) ->
-    Props = iolist_to_binary([format_props(Ps),<<"PROPS-END\n">>]),
-    Hs1 = update_headers(Hs, byte_size(Props), byte_size(Text)),
-    [format_headers(Hs1), $\n, Props, Text, $\n].
+format_record(#version{number = N}) ->
+    [format_header(svn_fs_dump_format_version, N), $\n];
+format_record(#uuid{id = Id}) ->
+    [format_header(uuid, Id), $\n];
+format_record(#revision{number = N, properties = Ps}) ->
+    format_record([{revision_number, N}], prop_chunk(Ps), <<>>);
+format_record(#change{path = Path, kind = Kind, action = Action,
+		      headers = Hs, properties = Ps, data = Data}) ->
+    Hs1 = [{node_path, Path},
+	   {node_kind, Kind},
+	   {node_action, Action}
+	   | Hs],
+    format_record(Hs1, prop_chunk(Ps), Data).
 
-format_headers(Hs) ->
-    [format_header(H) || H <- Hs].
+format_record(Hs, Props, Text) ->
+    PLen = byte_size(Props), 
+    TLen = byte_size(Text),
+    [[format_header(H) || H <- Hs],
+     [format_header(prop_content_length, PLen) || PLen > 0],
+     [format_header(text_content_length, TLen) || TLen > 0],
+     [format_header(content_length, PLen + TLen),
+      $\n, Props, Text, $\n]].
+
+prop_chunk([]) ->
+    <<>>;
+prop_chunk(Ps) ->
+    iolist_to_binary([format_props(Ps),<<"PROPS-END\n">>]).
 
 format_header({Name, Value}) ->
+    format_header(Name, Value).
+
+format_header(Name, Value) ->
     V = if is_integer(Value) ->
 		integer_to_list(Value);
 	   is_atom(Value) ->
@@ -464,15 +469,11 @@ lines_file_test() ->
 
 scan_record_test() ->
     Data0 = <<"SVN-fs-dump-format-version: 2\n\nUUID: ABC123\n\n"
-             "Revision-number: 123\nContent-length: 10\n\n0123456789\n">>,
-    {{[{svn_fs_dump_format_version,2}], none, <<>>},
-     Data1} = scan_record(Data0),
-    {{[{uuid,<<"ABC123">>}], none, <<>>},
-     Data2} = scan_record(Data1),
-    {{[{revision_number,123},
-       {content_length,10}],
-      none, <<"0123456789">>},
-     <<>>} = scan_record(Data2).
+             "Revision-number: 123\nProp-content-length: 10\n"
+	     "Content-length: 10\n\nPROPS-END\n\n">>,
+    {#version{number = 2}, Data1} = scan_record(Data0),
+    {#uuid{id = <<"ABC123">>}, Data2} = scan_record(Data1),
+    {#revision{number = 123}, <<>>} = scan_record(Data2).
 
 scan_properties_test() ->
     Data = <<"K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
