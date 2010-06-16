@@ -249,7 +249,7 @@ scan_records(Bin) ->
 
 scan_records(Bin, Rs) ->
     case scan_record(Bin) of
-	{{[], [], <<>>}, <<>>} ->
+	none ->
 	    %% ignore trailing empty lines
 	    lists:reverse(Rs);
 	{R, Rest} ->
@@ -270,6 +270,8 @@ scan_record(Bin, Hs) ->
     case scan_line(Bin) of
         {<<>>, Rest} when Hs =:= [], Rest =/= <<>> ->
 	    scan_record(Rest, Hs);  %% skip leading empty lines
+        {<<>>, <<>>} when Hs =:= [] ->
+            none;  %% no record found, only trailing empty lines
         {<<>>, Rest} ->
 	    make_record(Hs, [], none, [], none, Rest);
         {Line, Rest} ->
@@ -344,7 +346,7 @@ filter_dump(Infile, Fun) ->
 
 filter_dump(Bin, Out, Fun) ->
     case scan_record(Bin) of
-	{{[], [], <<>>}, <<>>} ->
+        none ->
 	    ok;  % ignore trailing empty lines
 	{R, Rest} ->
 	    file:write(Out, format_record(Fun(R))),
@@ -369,7 +371,7 @@ dump_to_terms(Infile) ->
 
 dump_to_terms(Bin, Out) ->
     case scan_record(Bin) of
-	{{[], [], <<>>}, <<>>} ->
+        none ->
 	    ok;  % ignore trailing empty lines
 	{R, Rest} ->
 	    io:format(Out, "~p.\n", [R]),
@@ -474,6 +476,11 @@ scan_record_test() ->
     {#version{number = 2}, Data1} = scan_record(Data0),
     {#uuid{id = <<"ABC123">>}, Data2} = scan_record(Data1),
     {#revision{number = 123}, <<>>} = scan_record(Data2).
+
+scan_empty_record_test_() ->
+    [?_assertEqual(none,scan_record(<<>>)),
+     ?_assertEqual(none,scan_record(<<"\n">>)),
+     ?_assertEqual(none,scan_record(<<"\n\n">>))].
 
 scan_properties_test() ->
     Data = <<"K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
