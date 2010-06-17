@@ -18,11 +18,11 @@
 
 f(#change{action=_Action, kind=_Kind, path=_Path, headers=_Hs,
           properties=_Ps, data=_Data}=R,
-  St) ->
-    {true, R, St};
-f(#revision{number=_N, properties=_Ps}=R, St) ->
-    {true, R, St};
-f(#uuid{id=_UUID}=_R, St) ->
-    {true, St};
-f(#version{number=_Version}=_R, St) ->
-    {true, St}.
+  Acc) ->
+    {true, R, Acc};
+f(#revision{number=_Rev, properties=_Ps}=R, Acc) ->
+    {true, R, Acc+1};  % count revisions in Acc
+f(#uuid{id=_UUID}=_R, Acc) ->
+    {true, Acc};
+f(#version{number=_Version}=_R, Acc) ->
+    {true, Acc}.
