@@ -9,7 +9,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--include("svndump.hrl").
+-include("../include/svndump.hrl").
 
 transform_test() ->
     Fun = fun (Rec=#change{properties = Ps}) ->

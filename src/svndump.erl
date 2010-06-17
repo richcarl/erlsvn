@@ -1,5 +1,18 @@
-%% ---------------------------------------------------------------------
-%% File: svndump.erl
+%% =====================================================================
+%% This library is free software; you can redistribute it and/or modify
+%% it under the terms of the GNU Lesser General Public License as
+%% published by the Free Software Foundation; either version 2 of the
+%% License, or (at your option) any later version.
+%%
+%% This library is distributed in the hope that it will be useful, but
+%% WITHOUT ANY WARRANTY; without even the implied warranty of
+%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+%% Lesser General Public License for more details.
+%%
+%% You should have received a copy of the GNU Lesser General Public
+%% License along with this library; if not, write to the Free Software
+%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+%% USA
 %%
 %% @author Richard Carlsson <richardc@klarna.com>
 %% @copyright 2010 Richard Carlsson
@@ -7,12 +20,143 @@
 
 -module(svndump).
 
+-behaviour(gen_server).
+
+%% API
 -export([dump_to_terms/1, scan_records/1, header_vsn/1, header_default/1,
 	 header_type/1, header_name/1, format_records/1, filter_dump/2]).
 
+%% gen_server callbacks
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+         terminate/2, code_change/3]).
+
+-record(state, {file}).
+
+
 -include_lib("eunit/include/eunit.hrl").
 
--include("svndump.hrl").
+-include("../include/svndump.hrl").
+
+-define(CHUNK_SIZE, 32768).
+
+%% =====================================================================
+%% API
+%% =====================================================================
+%% ---------------------------------------------------------------------
+%% Function: start_link() -> {ok,Pid} | ignore | {error,Error}
+%% Description: Starts the server
+%% ---------------------------------------------------------------------
+start_link(File) ->
+    gen_server:start_link(?MODULE, [File], []).
+
+%% =====================================================================
+%% gen_server callbacks
+%% =====================================================================
+
+%% ---------------------------------------------------------------------
+%% Function: init(Args) -> {ok, State} |
+%%                         {ok, State, Timeout} |
+%%                         ignore               |
+%%                         {stop, Reason}
+%% Description: Initiates the server
+%% ---------------------------------------------------------------------
+init([File]) ->
+    {ok, FD} = file:open(File, [read,raw,binary]),
+    put(eof, false),
+    put(file, FD),
+    {ok, #state{file=FD}}.
+
+%% ---------------------------------------------------------------------
+%% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
+%%                                      {reply, Reply, State, Timeout} |
+%%                                      {noreply, State} |
+%%                                      {noreply, State, Timeout} |
+%%                                      {stop, Reason, Reply, State} |
+%%                                      {stop, Reason, State}
+%% Description: Handling call messages
+%% ---------------------------------------------------------------------
+handle_call({apply, Fun}, _From, State) ->
+    try
+        Reply = Fun(),
+        {reply, Reply, State}
+    catch C:T ->
+            file:close(State#state.file),
+            error_logger:format("last revision: ~p\n"
+                                "exception: ~p:~p\n"
+                                "stack trace: ~p\n",
+                                [get(revision_number), C, T,
+                                 erlang:get_stacktrace()]),
+            {stop, error, State}
+    end.
+
+%% ---------------------------------------------------------------------
+%% Function: handle_cast(Msg, State) -> {noreply, State} |
+%%                                      {noreply, State, Timeout} |
+%%                                      {stop, Reason, State}
+%% Description: Handling cast messages
+%% ---------------------------------------------------------------------
+handle_cast(stop, State) ->
+    {stop, normal, State}.
+
+%% ---------------------------------------------------------------------
+%% Function: handle_info(Info, State) -> {noreply, State} |
+%%                                       {noreply, State, Timeout} |
+%%                                       {stop, Reason, State}
+%% Description: Handling all non call/cast messages
+%% ---------------------------------------------------------------------
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+%% ---------------------------------------------------------------------
+%% Function: terminate(Reason, State) -> void()
+%% Description: This function is called by a gen_server when it is about to
+%% terminate. It should be the opposite of Module:init/1 and do any necessary
+%% cleaning up. When it returns, the gen_server terminates with Reason.
+%% The return value is ignored.
+%% ---------------------------------------------------------------------
+terminate(_Reason, _State) ->
+    ok.
+
+%% ---------------------------------------------------------------------
+%% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
+%% Description: Convert process state when code is changed
+%% ---------------------------------------------------------------------
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%% ---------------------------------------------------------------------
+%%% Internal functions
+%% ---------------------------------------------------------------------
+
+
+open_outfile(File) ->
+    {ok, FD} = file:open(File, [write]),
+    FD.
+
+with_infile(File, Fun) ->
+    {ok, Pid} = start_link(File),
+    gen_server:call(Pid, {apply, Fun}, infinity),
+    gen_server:cast(Pid, stop).
+
+
+with_more(Rest, Fun) ->          
+    case get(eof) of
+        false ->
+            More = read_more(),
+            Fun(<<Rest/bytes, More/bytes>>);
+        EOF when EOF =:= true ; EOF =:= undefined ->
+            Fun(eof)
+    end.
+
+read_more() ->
+    case file:read(get(file), ?CHUNK_SIZE) of
+        {ok, Data} when is_binary(Data) ->
+            Data;
+        eof ->
+            put(eof, true),
+            <<>>
+    end.
+
 
 %% File format versions:
 %%  1 - svn pre-0.18.0
@@ -226,23 +370,6 @@ scan_property(Bin) ->
 	    throw(expected_prop_key)
     end.
 
-%% N bytes of data plus newline (not included in N)
-scan_nldata(N, Bin) ->
-    case Bin of
-	<<Data:N/bytes, "\n", Rest/bytes>> ->
-	    {Data, Rest};
-	_ ->
-	    throw(unexpected_end)
-    end.
-
-scan_data(N, Bin) ->
-    case Bin of
-	<<Data:N/bytes, Rest/bytes>> ->
-	    {Data, Rest};
-	_ ->
-	    throw(unexpected_end)
-    end.
-
 %% @doc Extracts all svndump records from a binary.
 scan_records(Bin) ->
     scan_records(Bin, []).
@@ -318,30 +445,33 @@ make_record([{node_action, Action} | Hs], Hs1, none, Ps, Data, Rest) ->
     make_record(Hs, Hs1, #change{action=Action}, Ps, Data, Rest);
 make_record([{revision_number, N} | Hs], Hs1, #revision{number=undefined}=R,
 	    Ps, Data, Rest) ->
+    put(revision_number, N),
     make_record(Hs, Hs1, R#revision{number=N}, Ps, Data, Rest);
 make_record([{revision_number, N} | Hs], Hs1, none, Ps, Data, Rest) ->
+    put(revision_number, N),
     make_record(Hs, Hs1, #revision{number=N}, Ps, Data, Rest);
 make_record([H | Hs], Hs1, R, Ps, Data, Rest) ->
     make_record(Hs, [H | Hs1], R, Ps, Data, Rest);
 make_record([], [], R=#revision{}, Ps, <<>>, Rest) ->
     {R#revision{properties=Ps}, Rest};
-make_record([], Hs1, R=#change{}, Ps, Data, Rest) ->
+make_record([], Hs1, R=#change{action=Action}, Ps, none, Rest)
+  when Action =/= undefined ->
+    {R#change{headers=Hs1, properties=Ps, data = <<>>}, Rest};
+make_record([], Hs1, R=#change{action=Action}, Ps, Data, Rest)
+  when Action =/= undefined ->
     {R#change{headers=Hs1, properties=Ps, data=Data}, Rest};
 make_record([], Hs1, R, Ps, Data, _Rest) ->
     throw({unknown_record, {Hs1, R, Ps, Data}}).
-
-open_write(File) ->
-    {ok, FD} = file:open(File, [write]),
-    FD.
 
 %% @doc Applies a filter function to all records of an SVN dump file. The
 %% new file gets the name of the input file with the suffix ".filtered".
 filter_dump(Infile, Fun) ->
     Outfile = Infile ++ ".filtered",
-    Out = open_write(Outfile),
-    {ok, Bin} = file:read_file(Infile),
-    filter_dump(Bin, Out, Fun),
-    file:close(Out),
+    Out = open_outfile(Outfile),
+    with_infile(Infile,
+                fun () ->
+                        filter_dump(<<>>, Out, Fun)
+                end),
     ok.
 
 filter_dump(Bin, Out, Fun) ->
@@ -363,10 +493,11 @@ filter_dump(Bin, Out, Fun) ->
 %% back using the Erlang standard library function file:consult().
 dump_to_terms(Infile) ->
     Outfile = Infile ++ ".terms",
-    Out = open_write(Outfile),
-    {ok, Bin} = file:read_file(Infile),
-    dump_to_terms(Bin, Out),
-    file:close(Out),
+    Out = open_outfile(Outfile),
+    with_infile(Infile,
+                fun () ->
+                        dump_to_terms(<<>>, Out)
+                end),
     ok.
 
 dump_to_terms(Bin, Out) ->
@@ -401,6 +532,19 @@ format_record(#change{path = Path, kind = Kind, action = Action,
 	   | Hs],
     format_record(Hs1, prop_chunk(Ps), Data).
 
+format_record(Hs, <<>>, <<>>) ->
+    [[format_header(H) || H <- Hs], $\n];
+format_record(Hs, <<>>, Text) ->
+    TLen = byte_size(Text),
+    [[format_header(H) || H <- Hs],
+     [format_header(content_length, TLen),
+      $\n, Text, $\n]];
+format_record(Hs, Props, <<>>) ->
+    PLen = byte_size(Props), 
+    [[format_header(H) || H <- Hs],
+     [format_header(prop_content_length, PLen) || PLen > 0],
+     [format_header(content_length, PLen),
+      $\n, Props, $\n]];
 format_record(Hs, Props, Text) ->
     PLen = byte_size(Props), 
     TLen = byte_size(Text),
@@ -445,7 +589,12 @@ scan_line(N, Bin) ->
         <<_:N/bytes, _/bytes>> ->
             scan_line(N+1, Bin);
         Rest ->
-            {Rest, <<>>}
+            with_more(Rest,
+                      fun (eof) ->
+                              {Rest, <<>>};
+                          (More) ->
+                              scan_line(0, More)
+                      end)
     end.
 
 lines(Bin) ->
@@ -459,7 +608,41 @@ lines(Bin, Ls) ->
             lines(Rest, [L|Ls])
     end.
 
+%% N bytes of data plus newline (not included in N)
+scan_nldata(N, Bin) ->
+    case Bin of
+	<<Data:N/bytes, "\n", Rest/bytes>> ->
+	    {Data, Rest};
+	Rest ->
+            with_more(Rest,
+                      fun (eof) ->
+                              throw(unexpected_end);
+                          (More) ->
+                              scan_nldata(N, More)
+                      end)
+    end.
+
+scan_data(N, Bin) ->
+    case Bin of
+	<<Data:N/bytes, Rest/bytes>> ->
+	    {Data, Rest};
+	Rest ->
+            with_more(Rest,
+                      fun (eof) ->
+                              throw(unexpected_end);
+                          (More) ->
+                              scan_data(N, More)
+                      end)
+    end.
+
+
 %% ---- Internal unit tests ----
+
+scan_line_test() ->
+    ?assertEqual({<<"abcdef">>,<<>>}, scan_line(<<"abcdef">>)),
+    ?assertEqual({<<"abcdef">>,<<>>}, scan_line(<<"abcdef\n">>)),
+    ?assertEqual({<<"abcdef">>,<<"xyz">>}, scan_line(<<"abcdef\nxyz">>)),
+    ?assertEqual({<<>>,<<"abcdef\nxyz">>}, scan_line(<<"\nabcdef\nxyz">>)).
 
 lines_test() ->
     ?assertMatch([<<"">>,<<"a">>,<<"bc">>,<<"">>,<<"def">>,<<"g">>],
