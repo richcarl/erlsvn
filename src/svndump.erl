@@ -23,8 +23,9 @@
 -behaviour(gen_server).
 
 %% API
--export([dump_to_terms/1, scan_records/1, header_vsn/1, header_default/1,
-	 header_type/1, header_name/1, format_records/1, filter_dump/2]).
+-export([filter/3, fold/3, to_terms/1]).
+-export([scan_records/1, header_vsn/1, header_default/1, header_type/1,
+	 header_name/1, format_records/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -135,9 +136,9 @@ open_outfile(File) ->
 
 with_infile(File, Fun) ->
     {ok, Pid} = start_link(File),
-    gen_server:call(Pid, {apply, Fun}, infinity),
-    gen_server:cast(Pid, stop).
-
+    Result = gen_server:call(Pid, {apply, Fun}, infinity),
+    gen_server:cast(Pid, stop),
+    Result.
 
 with_more(Rest, Fun) ->          
     case get(eof) of
@@ -463,44 +464,64 @@ make_record([], Hs1, R=#change{action=Action}, Ps, Data, Rest)
 make_record([], Hs1, R, Ps, Data, _Rest) ->
     throw({unknown_record, {Hs1, R, Ps, Data}}).
 
-%% @doc Applies a filter function to all records of an SVN dump file. The
-%% new file gets the name of the input file with the suffix ".filtered".
-filter_dump(Infile, Fun) ->
+%% @doc Applies a filter function (really map/fold/filter) to all records of
+%% an SVN dump file. The new file gets the name of the input file with the
+%% suffix ".filtered". The function gets a record and the current state, and
+%% should return either `{true, NewState}' or`{true, NewRecord, NewState}'
+%% if the (possibly modified) record should be kept, or `{false, NewState}'
+%% if the record should be omitted from the output. The function returns the
+%% final state.
+filter(Infile, Fun, State0) ->
     Outfile = Infile ++ ".filtered",
     Out = open_outfile(Outfile),
+    Fun1 = fun (R, St) ->
+                   case Fun(R, St) of
+                       {true, R1, St1} ->
+                           file:write(Out, format_record(R1)), St1;
+                       {true, St1} ->
+                           file:write(Out, format_record(R)), St1;
+                       {false, St1} ->
+                           St1
+                   end
+           end,
+    fold(Infile, Fun1, State0).
+
+%% @doc Applies a fold function to all records of an SVN dump file. The
+%% function gets a record and the current state, and should return the new
+%% state. The function returns the final state.
+fold(Infile, Fun, State0) ->
     with_infile(Infile,
                 fun () ->
-                        filter_dump(<<>>, Out, Fun)
-                end),
-    ok.
+                        fold_1(<<>>, Fun, State0)
+                end).
 
-filter_dump(Bin, Out, Fun) ->
+fold_1(Bin, Fun, State) ->
     case scan_record(Bin) of
         none ->
-	    ok;  % ignore trailing empty lines
+	    State;  % ignore trailing empty lines
 	{R, Rest} ->
-	    file:write(Out, format_record(Fun(R))),
-	    case Rest of
+            NewState = Fun(R, State),
+            case Rest of
 		<<>> ->
-		    ok;
+		    NewState;
 		_ ->
-		    filter_dump(Rest, Out, Fun)
+		    fold_1(Rest, Fun, NewState)
 	    end
     end.
 
 %% @doc Rewrites an SVN dump file to Erlang term format. The new file gets
 %% the name of the input file with the suffix ".terms", and can be read
 %% back using the Erlang standard library function file:consult().
-dump_to_terms(Infile) ->
+to_terms(Infile) ->
     Outfile = Infile ++ ".terms",
     Out = open_outfile(Outfile),
     with_infile(Infile,
                 fun () ->
-                        dump_to_terms(<<>>, Out)
+                        to_terms(<<>>, Out)
                 end),
     ok.
 
-dump_to_terms(Bin, Out) ->
+to_terms(Bin, Out) ->
     case scan_record(Bin) of
         none ->
 	    ok;  % ignore trailing empty lines
@@ -510,7 +531,7 @@ dump_to_terms(Bin, Out) ->
 		<<>> ->
 		    ok;
 		_ ->
-		    dump_to_terms(Rest, Out)
+		    to_terms(Rest, Out)
 	    end
     end.
 

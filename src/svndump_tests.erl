@@ -11,15 +11,23 @@
 
 -include("../include/svndump.hrl").
 
-transform_test() ->
-    Fun = fun (Rec=#change{properties = Ps}) ->
+filter_test() ->
+    Fun = fun (Rec=#change{properties = Ps}, State) ->
 		  Ps1 = Ps ++ [{<<"svn:secret">>,<<"blahonga">>}],
-		  Rec#change{properties = Ps1};
-	      (Other) ->
-		  Other
+		  {true, Rec#change{properties = Ps1}, State};
+	      (_Rec, State) ->
+		  {true, State}
 	  end,
-    svndump:filter_dump("priv/example.dump", Fun).
+    svndump:filter("priv/example.dump", Fun, []).
 
+fold_test() ->
+    Fun = fun (Rec=#revision{}, N) ->
+                  N + 1;
+	      (_Rec, N) ->
+                  N
+	  end,
+    ?assertEqual(1, svndump:fold("priv/example.dump", Fun, 0)),
+    svndump:fold("dump", Fun, 0).
 
 scan_records_file_test() ->
     {ok, Bin} = file:read_file("priv/example.dump"),
