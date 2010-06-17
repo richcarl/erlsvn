@@ -26,8 +26,7 @@ fold_test() ->
 	      (_Rec, N) ->
                   N
 	  end,
-    ?assertEqual(1, svndump:fold("priv/example.dump", Fun, 0)),
-    svndump:fold("dump", Fun, 0).
+    ?assertEqual(1, svndump:fold("priv/example.dump", Fun, 0)).
 
 scan_records_file_test() ->
     {ok, Bin} = file:read_file("priv/example.dump"),
