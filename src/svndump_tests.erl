@@ -21,7 +21,7 @@ filter_test() ->
     svndump:filter("priv/example.dump", Fun, []).
 
 fold_test() ->
-    Fun = fun (Rec=#revision{}, N) ->
+    Fun = fun (_Rec=#revision{}, N) ->
                   N + 1;
 	      (_Rec, N) ->
                   N
