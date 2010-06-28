@@ -38,7 +38,7 @@
 
 -include("../include/svndump.hrl").
 
--define(CHUNK_SIZE, 32768).
+-define(CHUNK_SIZE, (1024*1024)).
 
 %% =====================================================================
 %% API
@@ -466,7 +466,7 @@ make_record([{prop_content_length, PLen} | Hs], Hs1,
   when Data =/= undefined ->
     %% If there are properties, there must be a Prop-content-length and
     %% we must have seen a Content-length so we have extracted the content
-    {PData, TData} = scan_data(PLen, Data),
+    {PData, TData} = split_binary(Data, PLen),
     ?assertEqual(byte_size(PData), PLen),
     ?assertEqual(PLen + byte_size(TData), byte_size(Data)),
     Ps = scan_properties(PData),
@@ -648,9 +648,16 @@ format_prop({Name, Value}) ->
 
 scan_line(Bin) ->
     scan_line(0, Bin).
-                       
+
 scan_line(N, Bin) ->
     case Bin of
+        <<Line:N/bytes, "\n">> ->
+            with_more(<<>>,
+                      fun (eof) ->
+                              {Line, <<>>};
+                          (More) ->
+                              {Line, More}
+                      end);
         <<Line:N/bytes, "\n", Rest/bytes>> ->
             {Line, Rest};
         <<_:N/bytes, _/bytes>> ->
@@ -678,9 +685,16 @@ lines(Bin, Ls) ->
 %% N bytes of data plus newline (not included in N)
 scan_nldata(N, Bin) ->
     case Bin of
+	<<Data:N/bytes, "\n">> ->
+            with_more(<<>>,
+                      fun (eof) ->
+                              {Data, <<>>};
+                          (More) ->
+                              {Data, More}
+                      end);
 	<<Data:N/bytes, "\n", Rest/bytes>> ->
 	    {Data, Rest};
-	Rest ->
+        Rest ->
             with_more(Rest,
                       fun (eof) ->
                               throw(unexpected_end);
@@ -688,20 +702,6 @@ scan_nldata(N, Bin) ->
                               scan_nldata(N, More)
                       end)
     end.
-
-scan_data(N, Bin) ->
-    case Bin of
-	<<Data:N/bytes, Rest/bytes>> ->
-	    {Data, Rest};
-	Rest ->
-            with_more(Rest,
-                      fun (eof) ->
-                              throw(unexpected_end);
-                          (More) ->
-                              scan_data(N, More)
-                      end)
-    end.
-
 
 %% ---- Internal unit tests ----
 
