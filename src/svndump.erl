@@ -202,6 +202,8 @@ read_more() ->
 %% 
 %% Notes:
 %% * Content-length is always the last header before the blank line and content.
+%% * Content-length should always be included, but is sometimes omitted,
+%%   notably in delete-nodes written by the standard svndump.
 %% * For directory nodes, the content is only property data, no text data.
 
 scan_header(<<"Content-length: ", B/bytes>>) ->
@@ -367,6 +369,9 @@ scan_property(Bin) ->
 		X ->
 		    throw({expected_prop_value, X})
 	    end;
+        {<<"D ", K/bytes>>, Rest0} ->
+	    {Key, Rest1} = scan_nldata(scan_integer(K), Rest0),
+            {{Key, delete}, Rest1};
         _ ->
 	    throw(expected_prop_key)
     end.
@@ -389,11 +394,19 @@ scan_records(Bin, Rs) ->
 	    end
     end.
 
+%% temporary generic record representation
+-record(rec, {type,             %% version, uuid, revision, change
+              info,             %% type-dependent data (kind for changes)
+              properties,       %% list of properties (if any)
+              content,          %% binary content data (if any)
+              path,             %% node path (for changes)
+              action            %% node action (for changes)
+             }).
+
 scan_record(Bin) ->
     scan_record(Bin, []).
 
-%% Returns {Headers, Properties, Body}. Properties is 'none' if there
-%% was no Prop-content-length header, otherwise it's a list.
+%% Returns {Record, Rest} | none
 scan_record(Bin, Hs) ->
     case scan_line(Bin) of
         {<<>>, Rest} when Hs =:= [], Rest =/= <<>> ->
@@ -401,68 +414,89 @@ scan_record(Bin, Hs) ->
         {<<>>, <<>>} when Hs =:= [] ->
             none;  %% no record found, only trailing empty lines
         {<<>>, Rest} ->
-	    make_record(Hs, [], none, [], none, Rest);
+            make_record(Hs, Rest);
         {Line, Rest} ->
             scan_record(Rest, [scan_header(Line) | Hs])
     end.
 
-%% The header list is here in reverse-occurrence order
-make_record([{uuid, Id}], [], _R, [], none, Rest) ->
-    {#uuid{id = Id}, Rest};
-make_record([{svn_fs_dump_format_version, N}], [], _R, [], none, Rest) ->
-    {#version{number = N}, Rest};
-make_record([{content_length, Length} | Hs], [], R, [], none, Rest) ->
-    %% If the record has any content, the last header is Content-length
+make_record(Hs, Rest) ->
+    {R, Hs1, Rest1} = make_record(Hs, [], #rec{}, Rest),
+    %% sanity check intermediate record and build final representation
+    R1 = case R of
+             #rec{type = uuid, info = Id,
+                  properties = undefined, content = undefined, 
+                  path = undefined, action = undefined}
+             when Id =/= undefined ->
+                 #uuid{id = Id, headers = Hs1};
+             #rec{type = version, info = N,
+                  properties = undefined, content = undefined, 
+                  path = undefined, action = undefined}
+             when N =/= undefined ->
+                 #version{number = N, headers = Hs1};
+             #rec{type = revision, info = N,
+                  properties = Ps, path = undefined, action = undefined} 
+             when is_integer(N), N >= 0 ->
+                 #revision{number=N, properties = Ps, headers = Hs1};
+             #rec{type = change, info = Kind,
+                  properties = Ps, content = Data,
+                  path = Path, action = Action}
+             when Path =/= undefined, Action =/= undefined ->
+                 #change{path = Path, kind = Kind, action = Action,
+                         properties = Ps, headers = Hs1, data=Data};         
+             _ ->
+                 throw({unknown_record, {R, Hs1, Rest1}})
+         end,
+    {R1, Rest1}.
+
+%% Note: The incoming header list is here in reverse-occurrence order
+make_record([{uuid, Id} | Hs], Hs1,
+            #rec{type = undefined}=R, Rest) ->
+    make_record(Hs, Hs1, R#rec{type = uuid, info = Id}, Rest);
+make_record([{svn_fs_dump_format_version, N} | Hs], Hs1,
+            #rec{type = undefined}=R, Rest) ->
+    make_record(Hs, Hs1, R#rec{type = version, info = N}, Rest);
+make_record([{content_length, Length} | Hs], Hs1,
+            #rec{content = undefined}=R, Rest) ->
+    %% If the record has any content, there must be a Content-length header
     {Data, Rest1} = scan_nldata(Length, Rest),
     ?assertEqual(byte_size(Data), Length),
-    make_record(Hs, [], R, [], Data, Rest1);
-make_record([{prop_content_length, PLen} | Hs], Hs1, R, [], Data, Rest)
-  when is_binary(Data) ->
-    %% If there are properties, there should be a Prop-content-length and
+    make_record(Hs, Hs1, R#rec{content=Data}, Rest1);
+make_record([{prop_content_length, PLen} | Hs], Hs1,
+            #rec{content = Data}=R, Rest)
+  when Data =/= undefined ->
+    %% If there are properties, there must be a Prop-content-length and
     %% we must have seen a Content-length so we have extracted the content
     {PData, TData} = scan_data(PLen, Data),
     ?assertEqual(byte_size(PData), PLen),
     ?assertEqual(PLen + byte_size(TData), byte_size(Data)),
     Ps = scan_properties(PData),
-    make_record(Hs, Hs1, R, Ps, TData, Rest);
-make_record([{text_content_length, _} | Hs], Hs1, R, Ps, Data, Rest)
-  when is_binary(Data) ->
-    %% Discard this header - will be computed on output
-    make_record(Hs, Hs1, R, Ps, Data, Rest);
-make_record([{node_path, Path} | Hs], Hs1, #change{path=undefined}=R, Ps,
-	    Data, Rest) ->
-    make_record(Hs, Hs1, R#change{path=Path}, Ps, Data, Rest);
-make_record([{node_path, Path} | Hs], Hs1, none, Ps, Data, Rest) ->
-    make_record(Hs, Hs1, #change{path=Path}, Ps, Data, Rest);
-make_record([{node_kind, Kind} | Hs], Hs1, #change{kind=undefined}=R, Ps,
-	    Data, Rest) ->
-    make_record(Hs, Hs1, R#change{kind=Kind}, Ps, Data, Rest);
-make_record([{node_kind, Kind} | Hs], Hs1, none, Ps, Data, Rest) ->
-    make_record(Hs, Hs1, #change{kind=Kind}, Ps, Data, Rest);
-make_record([{node_action, Action} | Hs], Hs1, #change{action=undefined}=R,
-	    Ps, Data, Rest) ->
-    make_record(Hs, Hs1, R#change{action=Action}, Ps, Data, Rest);
-make_record([{node_action, Action} | Hs], Hs1, none, Ps, Data, Rest) ->
-    make_record(Hs, Hs1, #change{action=Action}, Ps, Data, Rest);
-make_record([{revision_number, N} | Hs], Hs1, #revision{number=undefined}=R,
-	    Ps, Data, Rest) ->
+    make_record(Hs, Hs1, R#rec{content = TData, properties = Ps}, Rest);
+make_record([{text_content_length, _} | Hs], Hs1,
+            #rec{content = Data}=R, Rest)
+  when Data =/= undefined ->
+    %% Discard any text content length headers - will be recomputed on output
+    make_record(Hs, Hs1, R, Rest);
+make_record([{node_path, Path} | Hs], Hs1,
+            #rec{type = T, path = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, path = Path}, Rest);
+make_record([{node_kind, Kind} | Hs], Hs1,
+            #rec{type = T, info = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, info = Kind}, Rest);
+make_record([{node_action, Action} | Hs], Hs1,
+            #rec{type = T, action = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, action = Action}, Rest);
+make_record([{revision_number, N} | Hs], Hs1,
+            #rec{type = undefined, info=undefined}=R, Rest) ->
     put(revision_number, N),
-    make_record(Hs, Hs1, R#revision{number=N}, Ps, Data, Rest);
-make_record([{revision_number, N} | Hs], Hs1, none, Ps, Data, Rest) ->
-    put(revision_number, N),
-    make_record(Hs, Hs1, #revision{number=N}, Ps, Data, Rest);
-make_record([H | Hs], Hs1, R, Ps, Data, Rest) ->
-    make_record(Hs, [H | Hs1], R, Ps, Data, Rest);
-make_record([], [], R=#revision{}, Ps, <<>>, Rest) ->
-    {R#revision{properties=Ps}, Rest};
-make_record([], Hs1, R=#change{action=Action}, Ps, none, Rest)
-  when Action =/= undefined ->
-    {R#change{headers=Hs1, properties=Ps, data = <<>>}, Rest};
-make_record([], Hs1, R=#change{action=Action}, Ps, Data, Rest)
-  when Action =/= undefined ->
-    {R#change{headers=Hs1, properties=Ps, data=Data}, Rest};
-make_record([], Hs1, R, Ps, Data, _Rest) ->
-    throw({unknown_record, {Hs1, R, Ps, Data}}).
+    make_record(Hs, Hs1, R#rec{type = revision, info = N}, Rest);
+make_record([H | Hs], Hs1, R, Rest) ->
+    %% other headers are just collected in order of occurrence
+    make_record(Hs, [H | Hs1], R, Rest);
+make_record([], Hs, R, Rest) ->
+    {R, Hs, Rest}.
 
 %% @doc Applies a filter function (really map/fold/filter) to all records of
 %% an SVN dump file. The new file gets the name of the input file with the
@@ -545,22 +579,32 @@ format_record(#uuid{id = Id}) ->
     [format_header(uuid, Id), $\n];
 format_record(#revision{number = N, properties = Ps}) ->
     format_record([{revision_number, N}], prop_chunk(Ps), <<>>);
-format_record(#change{path = Path, kind = Kind, action = Action,
+format_record(#change{action = delete, path = Path,
 		      headers = Hs, properties = Ps, data = Data}) ->
+    Hs1 = [{node_path, Path},
+	   {node_action, delete}
+	   | Hs],
+    format_record(Hs1, prop_chunk(Ps), Data);
+format_record(#change{action = Action, kind = Kind, path = Path,
+		      headers = Hs, properties = Ps, data = Data})
+  when Kind =/= undefined, Action =/= undefined ->
     Hs1 = [{node_path, Path},
 	   {node_kind, Kind},
 	   {node_action, Action}
 	   | Hs],
     format_record(Hs1, prop_chunk(Ps), Data).
 
-format_record(Hs, <<>>, <<>>) ->
-    [[format_header(H) || H <- Hs], $\n];
-format_record(Hs, <<>>, Text) ->
+format_record(Hs, undefined, undefined) ->
+    [[format_header(H) || H <- Hs],
+     [format_header(content_length, 0),  %% we always include this header
+      $\n]];
+format_record(Hs, undefined, Text) ->
     TLen = byte_size(Text),
     [[format_header(H) || H <- Hs],
+     [format_header(text_content_length, TLen) || TLen > 0],
      [format_header(content_length, TLen),
       $\n, Text, $\n]];
-format_record(Hs, Props, <<>>) ->
+format_record(Hs, Props, undefined) ->
     PLen = byte_size(Props), 
     [[format_header(H) || H <- Hs],
      [format_header(prop_content_length, PLen) || PLen > 0],
@@ -575,8 +619,8 @@ format_record(Hs, Props, Text) ->
      [format_header(content_length, PLen + TLen),
       $\n, Props, Text, $\n]].
 
-prop_chunk([]) ->
-    <<>>;
+prop_chunk(undefined) ->
+    undefined;
 prop_chunk(Ps) ->
     iolist_to_binary([format_props(Ps),<<"PROPS-END\n">>]).
 
@@ -596,6 +640,8 @@ format_header(Name, Value) ->
 format_props(Ps) ->
     [format_prop(P) || P <- Ps].
 
+format_prop({Name, delete}) ->
+    [<<"D ">>, integer_to_list(byte_size(Name)), $\n, Name, $\n];
 format_prop({Name, Value}) ->
     [<<"K ">>, integer_to_list(byte_size(Name)), $\n, Name, $\n,
      <<"V ">>, integer_to_list(byte_size(Value)), $\n, Value, $\n].
@@ -687,8 +733,10 @@ scan_empty_record_test_() ->
      ?_assertEqual(none,scan_record(<<"\n\n">>))].
 
 scan_properties_test() ->
-    Data = <<"K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
+    Data1 = <<"K 6\nauthor\nV 7\nsussman\nK 3\nlog\nV 33\n"
 	    "Added two files, changed a third.\nPROPS-END\n">>,
     [{<<"author">>,<<"sussman">>},
      {<<"log">>,<<"Added two files, changed a third.">>}
-    ] = scan_properties(Data).
+    ] = scan_properties(Data1),
+    Data2 = <<"D 6\nauthor\nPROPS-END\n">>,
+    [{<<"author">>,delete}] = scan_properties(Data2).

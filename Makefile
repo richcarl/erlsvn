@@ -1,7 +1,7 @@
 # simple Makefile
 ERLC_FLAGS=
 SOURCES=$(wildcard src/*.erl)
-HEADERS=$(wildcard src/*.hrl)
+HEADERS=$(wildcard src/*.hrl) $(wildcard include/*.hrl)
 OBJECTS=$(SOURCES:src/%.erl=ebin/%.beam)
 all: $(OBJECTS) test
 ebin/%.beam : src/%.erl $(HEADERS) Makefile

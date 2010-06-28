@@ -15,6 +15,9 @@
 
 %% kind: file | dir | undefined  (optional for a delete action)
 %% action: change | add | delete | replace
+%%
+%% The accumulator is an integer count of the number of revision records
+%% seen; typically initialized to 0.
 
 f(#change{action=_Action, kind=_Kind, path=_Path, headers=_Hs,
           properties=_Ps, data=_Data}=R,

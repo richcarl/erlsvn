@@ -12,10 +12,13 @@
 -include("../include/svndump.hrl").
 
 filter_test() ->
-    Fun = fun (Rec=#change{properties = Ps}, State) ->
+    Fun = fun (Rec=#change{properties = undefined}, State) ->
+		  Ps = [{<<"svn:secret">>,<<"ahooga">>}],
+		  {true, Rec#change{properties = Ps}, State};
+	      (Rec=#change{properties = Ps}, State) ->
 		  Ps1 = Ps ++ [{<<"svn:secret">>,<<"blahonga">>}],
 		  {true, Rec#change{properties = Ps1}, State};
-	      (_Rec, State) ->
+              (_Rec, State) ->
 		  {true, State}
 	  end,
     svndump:filter("priv/example.dump", Fun, []).
