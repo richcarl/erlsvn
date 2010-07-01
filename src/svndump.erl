@@ -400,7 +400,9 @@ scan_records(Bin, Rs) ->
               properties,       %% list of properties (if any)
               content,          %% binary content data (if any)
               path,             %% node path (for changes)
-              action            %% node action (for changes)
+              action,           %% node action (for changes)
+              copypath,         %% copied from path (for adds-with-history)
+              copyrev           %% copied from rev  (for adds-with-history)
              }).
 
 scan_record(Bin) ->
@@ -439,10 +441,20 @@ make_record(Hs, Rest) ->
                  #revision{number=N, properties = Ps, headers = Hs1};
              #rec{type = change, info = Kind,
                   properties = Ps, content = Data,
-                  path = Path, action = Action}
+                  path = Path, action = Action,
+                  copypath = undefined, copyrev = undefined}
              when Path =/= undefined, Action =/= undefined ->
                  #change{path = Path, kind = Kind, action = Action,
-                         properties = Ps, headers = Hs1, data=Data};         
+                         properties = Ps, headers = Hs1, data = Data};
+             #rec{type = change, info = Kind,
+                  properties = Ps, content = Data,
+                  path = Path, action = add,
+                  copypath = FromPath, copyrev = FromRev}
+             when Path =/= undefined,
+                  FromPath =/= undefined, FromRev =/= undefined->
+                 #change{path = Path, kind = Kind,
+                         action = {add, FromPath, FromRev},
+                         properties = Ps, headers = Hs1, data = Data};
              _ ->
                  throw({unknown_record, {R, Hs1, Rest1}})
          end,
@@ -488,6 +500,14 @@ make_record([{node_action, Action} | Hs], Hs1,
             #rec{type = T, action = undefined}=R, Rest)
   when T =:= undefined ; T =:= change ->
     make_record(Hs, Hs1, R#rec{type = change, action = Action}, Rest);
+make_record([{node_copyfrom_path, FromPath} | Hs], Hs1,
+            #rec{type = T, copypath = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, copypath = FromPath}, Rest);
+make_record([{node_copyfrom_rev, FromRev} | Hs], Hs1,
+            #rec{type = T, copyrev = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, copyrev = FromRev}, Rest);
 make_record([{revision_number, N} | Hs], Hs1,
             #rec{type = undefined, info=undefined}=R, Rest) ->
     put(revision_number, N),
@@ -581,18 +601,36 @@ format_record(#revision{number = N, properties = Ps}) ->
     format_record([{revision_number, N}], prop_chunk(Ps), <<>>);
 format_record(#change{action = delete, path = Path,
 		      headers = Hs, properties = Ps, data = Data}) ->
-    Hs1 = [{node_path, Path},
+    Hs1 = [{node_path, flat_path(Path)},
 	   {node_action, delete}
+	   | Hs],
+    format_record(Hs1, prop_chunk(Ps), Data);
+format_record(#change{action = {add, FromPath, FromRev}, path = Path,
+		      headers = Hs, properties = Ps,
+                      data = Data}) ->
+    Hs1 = [{node_path, flat_path(Path)},
+	   {node_action, change},
+           {node_copyfrom_path, flat_path(FromPath)},
+           {node_copyfrom_rev, FromRev}
 	   | Hs],
     format_record(Hs1, prop_chunk(Ps), Data);
 format_record(#change{action = Action, kind = Kind, path = Path,
 		      headers = Hs, properties = Ps, data = Data})
   when Kind =/= undefined, Action =/= undefined ->
-    Hs1 = [{node_path, Path},
+    Hs1 = [{node_path, flat_path(Path)},
 	   {node_kind, Kind},
 	   {node_action, Action}
 	   | Hs],
     format_record(Hs1, prop_chunk(Ps), Data).
+
+flat_path(Path) when is_binary(Path) -> Path;
+flat_path([Path]) when is_binary(Path) -> Path;
+flat_path([]) -> <<>>;
+flat_path([P | Ps]) when is_binary(P) ->
+    list_to_binary([P | flat_path_1(Ps)]).
+
+flat_path_1([P | Ps]) -> ["/", P | flat_path_1(Ps)];
+flat_path_1([]) -> [].
 
 format_record(Hs, undefined, undefined) ->
     [[format_header(H) || H <- Hs],
