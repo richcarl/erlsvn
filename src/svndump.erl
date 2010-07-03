@@ -609,7 +609,7 @@ format_record(#change{action = {add, FromPath, FromRev}, path = Path,
 		      headers = Hs, properties = Ps,
                       data = Data}) ->
     Hs1 = [{node_path, flat_path(Path)},
-	   {node_action, change},
+	   {node_action, add},
            {node_copyfrom_path, flat_path(FromPath)},
            {node_copyfrom_rev, FromRev}
 	   | Hs],
