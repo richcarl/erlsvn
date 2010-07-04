@@ -523,22 +523,35 @@ make_record([], Hs, R, Rest) ->
 %% suffix ".filtered". The function gets a record and the current state, and
 %% should return either `{true, NewState}' or`{true, NewRecord, NewState}'
 %% if the (possibly modified) record should be kept, or `{false, NewState}'
-%% if the record should be omitted from the output. The function returns the
-%% final state.
+%% if the record should be omitted from the output. `NewRecord' can also be
+%% a list of records, typically for splitting or duplicating a change,
+%% creating missing paths, and so on. The function returns the final state.
 filter(Infile, Fun, State0) ->
     Outfile = Infile ++ ".filtered",
     Out = open_outfile(Outfile),
     Fun1 = fun (R, St) ->
                    case Fun(R, St) of
                        {true, R1, St1} ->
-                           file:write(Out, format_record(R1)), St1;
+                           write_records(R1, Out), % possibly a list
+                           St1;
                        {true, St1} ->
-                           file:write(Out, format_record(R)), St1;
+                           write_record(R, Out),
+                           St1;
                        {false, St1} ->
                            St1
                    end
            end,
     fold(Infile, Fun1, State0).
+
+write_records([R | Rs], Out) ->
+    write_record(R, Out), write_records(Rs, Out);
+write_records([], _Out) ->
+    ok;
+write_records(R, Out) ->
+    write_record(R, Out).
+
+write_record(R, Out) ->
+    file:write(Out, format_record(R)).
 
 %% @doc Applies a fold function to all records of an SVN dump file. The
 %% function gets a record and the current state, and should return the new
