@@ -81,6 +81,10 @@ handle_call({apply, Fun}, _From, State) ->
         Reply = Fun(),
         {reply, Reply, State}
     catch C:T ->
+            %% we need to clear the process dict from tracked paths;
+            %% otherwise, the OTP error reporting will crash the system when
+            %% it tries to handle all the data in the dictionary
+            [put(K, V) || {K,V} <- erase(), not is_integer(K)],
             file:close(State#state.file),
             error_logger:format("last revision: ~p\n"
                                 "exception: ~p:~p\n"
@@ -530,6 +534,24 @@ filter(Infile, Fun, State0) ->
     Outfile = Infile ++ ".filtered",
     Out = open_outfile(Outfile),
     Fun1 = fun (R, St) ->
+                   case R of
+                       #uuid{} ->
+                           %% initialization is done here, since this code
+                           %% is executed by a separate process
+                           put(rev, 0),  % initialize 'latest revision'
+                           %% map revision 0 to the empty tree
+                           put(0, gb_trees:empty()),
+                           ok;
+                       #revision{number=N} ->
+                           %% map the new revision to the same path tree as
+                           %% the previous revision
+                           put(N, get(get(rev))),
+                           %% update the current revison (note that this is
+                           %% tracked separately from revision_number)
+                           put(rev, N);
+                       _ ->
+                           ok
+                   end,
                    case Fun(R, St) of
                        {true, R1, St1} ->
                            write_records(R1, Out), % possibly a list
@@ -551,12 +573,33 @@ write_records(R, Out) ->
     write_record(R, Out).
 
 write_record(R, Out) ->
+    track_paths(R),
     file:write(Out, format_record(R)).
+
+%% track and sanity check paths
+track_paths(#change{action=Action, kind=Kind, path=Path}) ->
+    case Action of
+        {add, FromPath, FromRev} ->
+            %% check existence of copy source
+            find_tree(maybe_split_path(FromPath), FromRev);
+        _ ->
+            ok
+    end,
+    modify_path(maybe_split_path(Path), Kind, Action, get(rev)),
+    ok;
+track_paths(_R) ->
+    ok.
+
+maybe_split_path(P) when is_binary(P) ->
+    re:split(P, "/");
+maybe_split_path(P) ->
+    P.
 
 %% @doc Applies a fold function to all records of an SVN dump file. The
 %% function gets a record and the current state, and should return the new
 %% state. The function returns the final state.
 fold(Infile, Fun, State0) ->
+    %% runs in separate server process
     with_infile(Infile,
                 fun () ->
                         fold_1(<<>>, Fun, State0)
@@ -569,11 +612,11 @@ fold_1(Bin, Fun, State) ->
 	{R, Rest} ->
             NewState = Fun(R, State),
             case Rest of
-		<<>> ->
-		    NewState;
-		_ ->
-		    fold_1(Rest, Fun, NewState)
-	    end
+                <<>> ->
+                    NewState;
+                _ ->
+                    fold_1(Rest, Fun, NewState)
+            end
     end.
 
 %% @doc Rewrites an SVN dump file to Erlang term format. The new file gets
@@ -582,6 +625,7 @@ fold_1(Bin, Fun, State) ->
 to_terms(Infile) ->
     Outfile = Infile ++ ".terms",
     Out = open_outfile(Outfile),
+    %% runs in separate server process
     with_infile(Infile,
                 fun () ->
                         to_terms(<<>>, Out)
@@ -753,6 +797,114 @@ scan_nldata(N, Bin) ->
                               scan_nldata(N, More)
                       end)
     end.
+
+%% We need some infrastructure to keep track of valid paths, but despite the
+%% overhead, having this sanity check is well worth it, on large repos. We
+%% abuse both the process dictionary and the atom table to gain efficiency.
+%% In particular, we need to use the process dictionary to store the trees,
+%% to preserve sharing of data structures and minimize copying.
+
+cache_bin(Bin) ->
+    erlang:binary_to_atom(Bin, latin1).
+
+find_tree(Path, Rev) ->
+    case get(Rev) of
+        undefined ->
+            throw({nonexisting_revision, Rev});
+        Tree ->
+            %% search in tree for Rev
+            find_tree(Path, Tree, Path, Rev)
+    end.
+
+find_tree([A | As], Tree, Path0, Rev) ->
+    Key = cache_bin(A),
+    case gb_trees:lookup(Key, Tree) of
+        {value, []} when As =:= [] ->
+            Tree;
+        {value,[]} ->
+            throw({not_a_directory, A, As, Path0, Rev});
+        {value, SubTree} ->
+            find_tree(As, SubTree, Path0, Rev);
+        none ->
+            throw({missing_parent_directory, A, As, Path0, Rev})
+    end;
+find_tree([], Tree, _, _) ->
+    Tree.
+
+%% note that you shouldn't modify any revisions other than the latest
+modify_path([], Kind, Action, Rev) ->
+    exit({modifying_empty_path, Kind, Action, Rev});
+modify_path(Path, Kind, Action, Rev) when is_integer(Rev) ->
+    case get(Rev) of
+        undefined ->
+            throw({nonexisting_revision, Rev});
+        Tree ->
+            try modify_path_1(Path, Kind, Action, Tree) of
+                NewTree ->
+                    put(Rev, NewTree)
+            catch
+                Throw ->
+                    exit({modify_path_failed,
+                          {Throw, Path, Kind, Action, Rev}})
+            end
+    end.
+
+modify_path_1([A], Kind, Action, Tree) ->
+    Key = cache_bin(A),
+    case gb_trees:lookup(Key, Tree) of
+        {value, _} ->
+            %% Tree already has an entry for A
+            case Action of
+                add -> throw(target_exists);
+                change -> Tree;  % no need to update anything
+                _ ->
+                    %% add-with-history seems to be considered as a variant
+                    %% of replace; in both cases we must update the parent
+                    update_tree(A, Kind, Action, Tree)
+            end;
+        none ->
+            %% No entry for A in Tree
+            case Action of
+                change -> throw(missing_target);
+                replace -> throw(missing_target);
+                delete -> throw(missing_target);
+                _ ->
+                    %% add or add-with-history both work for new entries
+                    update_tree(A, Kind, Action, Tree)
+            end
+    end;
+modify_path_1([A|As], Kind, Action, Tree) ->
+    %% A is an intermediate directory in the path; it must have an entry
+    %% in Tree, or something is wrong!
+    Key = cache_bin(A),
+    case gb_trees:lookup(Key, Tree) of
+        {value, SubTree} ->
+            %% recurse into the subtree, then update the current tree
+            NewSubTree = modify_path_1(As, Kind, Action, SubTree),
+            gb_trees:update(Key, NewSubTree, Tree);
+        none ->
+            %% A doesn't exist in parent directory
+            throw({missing_parent_directory, A, As})
+    end.
+
+update_tree(A, _Kind, delete, Tree) ->
+    Key = cache_bin(A),
+    gb_trees:delete(Key, Tree);
+update_tree(A, Kind, Action, Tree) ->
+    What = case Kind of
+               dir ->
+                   case Action of
+                       {add, FromPath, FromRev} ->
+                           find_tree(FromPath, FromRev);
+                       _ ->
+                           gb_trees:empty()
+                   end;
+               file ->
+                   []
+           end,
+    Key = cache_bin(A),
+    gb_trees:enter(Key, What, Tree).
+
 
 %% ---- Internal unit tests ----
 
