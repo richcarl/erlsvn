@@ -3,18 +3,27 @@ SVN-fs-dump-format-version: 2
 UUID: 7bf7a5ef-cabf-0310-b7d4-93df341afa7e
 
 Revision-number: 1422
-Prop-content-length: 80
-Content-length: 80
+Prop-content-length: 89
+Content-length: 89
 
-K 6
-author
+K 10
+svn:author
 V 7
 sussman
-K 3
-log
+K 7
+svn:log
 V 33
 Added two files, changed a third.
 PROPS-END
+
+Node-path: bar
+Node-kind: dir
+Node-action: add
+Prop-content-length: 10
+Content-length: 10
+
+PROPS-END
+
 
 Node-path: bar/baz
 Node-kind: dir
@@ -48,7 +57,22 @@ PROPS-END
 Here is the text of the newly added 'bop' file.
 Whee.
 
-Node-path: bar/foo.c
+
+Revision-number: 1423
+Prop-content-length: 71
+Content-length: 71
+
+K 10
+svn:author
+V 7
+sussman
+K 7
+svn:log
+V 15
+Changed a file.
+PROPS-END
+
+Node-path: bar/baz/bop
 Node-kind: file
 Node-action: change
 Text-content-length: 102
