@@ -38,7 +38,7 @@
 
 -include("../include/svndump.hrl").
 
--define(CHUNK_SIZE, (1024*1024)).
+-define(CHUNK_SIZE, (8*1024*1024)).
 
 %% =====================================================================
 %% API
@@ -154,6 +154,9 @@ with_more(Rest, Fun) ->
     end.
 
 read_more() ->
+    %% force GC here to keep memory usage lower (well worth the extra CPU
+    %% usage - if you start swapping, it costs a lot more in total time)
+    garbage_collect(),
     case file:read(get(file), ?CHUNK_SIZE) of
         {ok, Data} when is_binary(Data) ->
             Data;
@@ -530,14 +533,20 @@ make_record([], Hs, R, Rest) ->
 %% if the record should be omitted from the output. `NewRecord' can also be
 %% a list of records, typically for splitting or duplicating a change,
 %% creating missing paths, and so on. The function returns the final state.
+%% If the user does `put(dry_run, true)' in the handling of the first record
+%% (always #version), no output will be written.
+
 filter(Infile, Fun, State0) ->
+    %% TODO: this function should really just take a file descriptor
     Outfile = Infile ++ ".filtered",
     Out = open_outfile(Outfile),
     Fun1 = fun (R, St) ->
                    case R of
-                       #uuid{} ->
-                           %% initialization is done here, since this code
-                           %% is executed by a separate process
+                       #version{} ->
+                           %% initialization is done here, at the first
+                           %% record of the dump (recall that this code is
+                           %% executed by a separate process)
+                           put(dry_run, false),
                            put(rev, 0),  % initialize 'latest revision'
                            %% map revision 0 to the empty tree
                            put(0, gb_trees:empty()),
@@ -574,7 +583,11 @@ write_records(R, Out) ->
 
 write_record(R, Out) ->
     track_paths(R),
-    file:write(Out, format_record(R)).
+    Data = format_record(R),
+    case get(dry_run) of
+        true -> ok;
+        false -> file:write(Out, Data)
+    end.
 
 %% track and sanity check paths
 track_paths(#change{action=Action, kind=Kind, path=Path}) ->
