@@ -19,4 +19,4 @@
 %% this will be formatted as change of type add with the headers
 %% Node-copyfrom-path and Node-copyfrom-rev. Note that the data field is not
 %% necessarily empty for an add with history!
--record(change, {path, kind, action, properties, headers=[], data}).
+-record(change, {path, kind, action, properties, headers=[], md5, data}).
