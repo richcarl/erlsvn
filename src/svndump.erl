@@ -18,6 +18,8 @@
 %% @copyright 2010 Richard Carlsson
 %% @doc Functions for working with SVN dumpfiles.
 
+%% TODO: track md5 sums and check all copy source md5 sums
+
 -module(svndump).
 
 -behaviour(gen_server).
@@ -208,10 +210,14 @@ read_more() ->
 %% * PROPS-END\n
 %% 
 %% Notes:
-%% * Content-length is always the last header before the blank line and content.
+%% * Content-length is always the last header before the blank line and
+%% content.
 %% * Content-length should always be included, but is sometimes omitted,
 %%   notably in delete-nodes written by the standard svndump.
 %% * For directory nodes, the content is only property data, no text data.
+%% * Text-content-length should always be included if there is any content
+%% apart from properties. Otherwise, you can't tell the difference between a
+%% zero-length text content and no text content.
 
 scan_header(<<"Content-length: ", B/bytes>>) ->
     {content_length, scan_integer(B)}; % length of following content
@@ -405,11 +411,13 @@ scan_records(Bin, Rs) ->
 -record(rec, {type,             %% version, uuid, revision, change
               info,             %% type-dependent data (kind for changes)
               properties,       %% list of properties (if any)
-              content,          %% binary content data (if any)
+              textlength,       %% undefined if no text content
+              content,          %% text content data (if any), as binary
               path,             %% node path (for changes)
               action,           %% node action (for changes)
               copypath,         %% copied from path (for adds-with-history)
-              copyrev           %% copied from rev  (for adds-with-history)
+              copyrev,          %% copied from rev  (for adds-with-history)
+              md5               %% MD5 sum of text content or copy source
              }).
 
 scan_record(Bin) ->
@@ -427,6 +435,18 @@ scan_record(Bin, Hs) ->
         {Line, Rest} ->
             scan_record(Rest, [scan_header(Line) | Hs])
     end.
+
+%% Make sure that the text content matches the text-content-length header.
+%% If there was no such header, there should be no text content. We may get
+%% an empty binary as remainder after splitting out properties, but that
+%% doesn't automatically mean that there's text content present.
+make_text(undefined, undefined) ->
+    undefined;
+make_text(<<>>, undefined) ->
+    undefined;
+make_text(Bin, TLen) when is_binary(Bin) ->
+    ?assertEqual(byte_size(Bin), TLen), 
+    Bin.
 
 make_record(Hs, Rest) ->
     {R, Hs1, Rest1} = make_record(Hs, [], #rec{}, Rest),
@@ -447,21 +467,23 @@ make_record(Hs, Rest) ->
              when is_integer(N), N >= 0 ->
                  #revision{number=N, properties = Ps, headers = Hs1};
              #rec{type = change, info = Kind,
-                  properties = Ps, content = Data,
+                  properties = Ps, content = Data, textlength = TLen,
                   path = Path, action = Action,
-                  copypath = undefined, copyrev = undefined}
+                  copypath = undefined, copyrev = undefined, md5=MD5}
              when Path =/= undefined, Action =/= undefined ->
                  #change{path = Path, kind = Kind, action = Action,
-                         properties = Ps, headers = Hs1, data = Data};
+                         properties = Ps, headers = Hs1,
+                         md5 = MD5, data = make_text(Data, TLen)};
              #rec{type = change, info = Kind,
-                  properties = Ps, content = Data,
+                  properties = Ps, content = Data, textlength = TLen,
                   path = Path, action = add,
-                  copypath = FromPath, copyrev = FromRev}
+                  copypath = FromPath, copyrev = FromRev, md5=MD5}
              when Path =/= undefined,
                   FromPath =/= undefined, FromRev =/= undefined->
                  #change{path = Path, kind = Kind,
                          action = {add, FromPath, FromRev},
-                         properties = Ps, headers = Hs1, data = Data};
+                         properties = Ps, headers = Hs1,
+                         md5=MD5, data = make_text(Data, TLen)};
              _ ->
                  throw({unknown_record, {R, Hs1, Rest1}})
          end,
@@ -481,7 +503,7 @@ make_record([{content_length, Length} | Hs], Hs1,
     ?assertEqual(byte_size(Data), Length),
     make_record(Hs, Hs1, R#rec{content=Data}, Rest1);
 make_record([{prop_content_length, PLen} | Hs], Hs1,
-            #rec{content = Data}=R, Rest)
+            #rec{content = Data, properties = undefined}=R, Rest)
   when Data =/= undefined ->
     %% If there are properties, there must be a Prop-content-length and
     %% we must have seen a Content-length so we have extracted the content
@@ -490,11 +512,11 @@ make_record([{prop_content_length, PLen} | Hs], Hs1,
     ?assertEqual(PLen + byte_size(TData), byte_size(Data)),
     Ps = scan_properties(PData),
     make_record(Hs, Hs1, R#rec{content = TData, properties = Ps}, Rest);
-make_record([{text_content_length, _} | Hs], Hs1,
+make_record([{text_content_length, TLen} | Hs], Hs1,
             #rec{content = Data}=R, Rest)
   when Data =/= undefined ->
     %% Discard any text content length headers - will be recomputed on output
-    make_record(Hs, Hs1, R, Rest);
+    make_record(Hs, Hs1, R#rec{textlength = TLen}, Rest);
 make_record([{node_path, Path} | Hs], Hs1,
             #rec{type = T, path = undefined}=R, Rest)
   when T =:= undefined ; T =:= change ->
@@ -515,6 +537,14 @@ make_record([{node_copyfrom_rev, FromRev} | Hs], Hs1,
             #rec{type = T, copyrev = undefined}=R, Rest)
   when T =:= undefined ; T =:= change ->
     make_record(Hs, Hs1, R#rec{type = change, copyrev = FromRev}, Rest);
+make_record([{text_content_md5, MD5} | Hs], Hs1,
+            #rec{type = T, md5 = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, md5 = MD5}, Rest);
+make_record([{text_copy_source_md5, MD5} | Hs], Hs1,
+            #rec{type = T, md5 = undefined}=R, Rest)
+  when T =:= undefined ; T =:= change ->
+    make_record(Hs, Hs1, R#rec{type = change, md5 = MD5}, Rest);
 make_record([{revision_number, N} | Hs], Hs1,
             #rec{type = undefined, info=undefined}=R, Rest) ->
     put(revision_number, N),
@@ -581,7 +611,8 @@ write_records([], _Out) ->
 write_records(R, Out) ->
     write_record(R, Out).
 
-write_record(R, Out) ->
+write_record(R0, Out) ->
+    R = update_md5(R0),
     track_paths(R),
     Data = format_record(R),
     case get(dry_run) of
@@ -607,6 +638,17 @@ maybe_split_path(P) when is_binary(P) ->
     re:split(P, "/");
 maybe_split_path(P) ->
     P.
+
+update_md5(#change{data=Data, md5=OldMD5}=R)
+  when is_binary(Data), OldMD5 =/= undefined ->
+    MD5 = << <<(hexchar(B div 16)), (hexchar(B rem 16))>>
+           || <<B>> <= erlang:md5(Data) >>,
+    R#change{md5 = MD5};
+update_md5(R) ->
+    R.
+
+hexchar(N) when N >= 0, N < 10 -> $0 + N;    
+hexchar(N) when N >= 10, N < 16 -> $a + N - 10.
 
 %% @doc Applies a fold function to all records of an SVN dump file. The
 %% function gets a record and the current state, and should return the new
@@ -677,30 +719,24 @@ format_record(#change{action = delete, path = Path,
     format_record(Hs1, prop_chunk(Ps), Data);
 format_record(#change{action = {add, FromPath, FromRev}, path = Path,
 		      headers = Hs, properties = Ps,
-                      data = Data}) ->
-    Hs1 = [{node_path, flat_path(Path)},
-	   {node_action, add},
-           {node_copyfrom_path, flat_path(FromPath)},
-           {node_copyfrom_rev, FromRev}
-	   | Hs],
+                      md5 = MD5, data = Data}) ->
+    Hs1 = ([{node_path, flat_path(Path)},
+            {node_action, add},
+            {node_copyfrom_rev, FromRev},
+            {node_copyfrom_path, flat_path(FromPath)}]
+           ++ [{text_copy_source_md5, MD5} || MD5 =/= undefined]
+           ++ Hs),
     format_record(Hs1, prop_chunk(Ps), Data);
 format_record(#change{action = Action, kind = Kind, path = Path,
-		      headers = Hs, properties = Ps, data = Data})
+		      headers = Hs, properties = Ps,
+                      md5 = MD5, data = Data})
   when Kind =/= undefined, Action =/= undefined ->
-    Hs1 = [{node_path, flat_path(Path)},
-	   {node_kind, Kind},
-	   {node_action, Action}
-	   | Hs],
+    Hs1 = ([{node_path, flat_path(Path)},
+            {node_kind, Kind},
+            {node_action, Action}]
+           ++ [{text_content_md5, MD5} || MD5 =/= undefined]
+           ++ Hs),
     format_record(Hs1, prop_chunk(Ps), Data).
-
-flat_path(Path) when is_binary(Path) -> Path;
-flat_path([Path]) when is_binary(Path) -> Path;
-flat_path([]) -> <<>>;
-flat_path([P | Ps]) when is_binary(P) ->
-    list_to_binary([P | flat_path_1(Ps)]).
-
-flat_path_1([P | Ps]) -> ["/", P | flat_path_1(Ps)];
-flat_path_1([]) -> [].
 
 format_record(Hs, undefined, undefined) ->
     [[format_header(H) || H <- Hs],
@@ -726,6 +762,15 @@ format_record(Hs, Props, Text) ->
      [format_header(text_content_length, TLen) || TLen > 0],
      [format_header(content_length, PLen + TLen),
       $\n, Props, Text, $\n]].
+
+flat_path(Path) when is_binary(Path) -> Path;
+flat_path([Path]) when is_binary(Path) -> Path;
+flat_path([]) -> <<>>;
+flat_path([P | Ps]) when is_binary(P) ->
+    list_to_binary([P | flat_path_1(Ps)]).
+
+flat_path_1([P | Ps]) -> ["/", P | flat_path_1(Ps)];
+flat_path_1([]) -> [].
 
 prop_chunk(undefined) ->
     undefined;
