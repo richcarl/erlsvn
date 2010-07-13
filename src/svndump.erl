@@ -640,7 +640,7 @@ maybe_split_path(P) ->
     P.
 
 update_md5(#change{data=Data, md5=OldMD5}=R)
-  when is_binary(Data), OldMD5 =/= undefined ->
+  when is_binary(Data) ->
     MD5 = << <<(hexchar(B div 16)), (hexchar(B rem 16))>>
            || <<B>> <= erlang:md5(Data) >>,
     R#change{md5 = MD5};
