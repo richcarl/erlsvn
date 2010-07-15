@@ -18,8 +18,6 @@
 %% @copyright 2010 Richard Carlsson
 %% @doc Functions for working with SVN dumpfiles.
 
-%% TODO: track md5 sums and check all copy source md5 sums
-
 -module(svndump).
 
 -behaviour(gen_server).
@@ -415,9 +413,10 @@ scan_records(Bin, Rs) ->
               content,          %% text content data (if any), as binary
               path,             %% node path (for changes)
               action,           %% node action (for changes)
+              md5,              %% MD5 sum of text content
               copypath,         %% copied from path (for adds-with-history)
               copyrev,          %% copied from rev  (for adds-with-history)
-              md5               %% MD5 sum of text content or copy source
+              copymd5           %% MD5 sum of copy source 
              }).
 
 scan_record(Bin) ->
@@ -468,20 +467,20 @@ make_record(Hs, Rest) ->
                  #revision{number=N, properties = Ps, headers = Hs1};
              #rec{type = change, info = Kind,
                   properties = Ps, content = Data, textlength = TLen,
-                  path = Path, action = Action,
-                  copypath = undefined, copyrev = undefined, md5=MD5}
+                  path = Path, action = Action, md5=MD5,
+                  copypath = undefined, copyrev = undefined}
              when Path =/= undefined, Action =/= undefined ->
                  #change{path = Path, kind = Kind, action = Action,
                          properties = Ps, headers = Hs1,
                          md5 = MD5, data = make_text(Data, TLen)};
              #rec{type = change, info = Kind,
                   properties = Ps, content = Data, textlength = TLen,
-                  path = Path, action = add,
-                  copypath = FromPath, copyrev = FromRev, md5=MD5}
+                  path = Path, action = add, md5=MD5,
+                  copypath = FromPath, copyrev = FromRev, copymd5=FromMD5}
              when Path =/= undefined,
                   FromPath =/= undefined, FromRev =/= undefined->
                  #change{path = Path, kind = Kind,
-                         action = {add, FromPath, FromRev},
+                         action = {add, FromPath, FromRev, FromMD5},
                          properties = Ps, headers = Hs1,
                          md5=MD5, data = make_text(Data, TLen)};
              _ ->
@@ -542,9 +541,9 @@ make_record([{text_content_md5, MD5} | Hs], Hs1,
   when T =:= undefined ; T =:= change ->
     make_record(Hs, Hs1, R#rec{type = change, md5 = MD5}, Rest);
 make_record([{text_copy_source_md5, MD5} | Hs], Hs1,
-            #rec{type = T, md5 = undefined}=R, Rest)
+            #rec{type = T, copymd5 = undefined}=R, Rest)
   when T =:= undefined ; T =:= change ->
-    make_record(Hs, Hs1, R#rec{type = change, md5 = MD5}, Rest);
+    make_record(Hs, Hs1, R#rec{type = change, copymd5 = MD5}, Rest);
 make_record([{revision_number, N} | Hs], Hs1,
             #rec{type = undefined, info=undefined}=R, Rest) ->
     put(revision_number, N),
@@ -577,6 +576,7 @@ filter(Infile, Fun, State0) ->
                            %% record of the dump (recall that this code is
                            %% executed by a separate process)
                            put(dry_run, false),
+                           put(update_md5, true),
                            put(rev, 0),  % initialize 'latest revision'
                            %% map revision 0 to the empty tree
                            put(0, gb_trees:empty()),
@@ -612,7 +612,10 @@ write_records(R, Out) ->
     write_record(R, Out).
 
 write_record(R0, Out) ->
-    R = update_md5(R0),
+    R = case get(update_md5) of
+            true -> update_md5(R0);
+            false -> R0
+        end,
     track_paths(R),
     Data = format_record(R),
     case get(dry_run) of
@@ -621,15 +624,8 @@ write_record(R0, Out) ->
     end.
 
 %% track and sanity check paths
-track_paths(#change{action=Action, kind=Kind, path=Path}) ->
-    case Action of
-        {add, FromPath, FromRev} ->
-            %% check existence of copy source
-            find_tree(maybe_split_path(FromPath), FromRev);
-        _ ->
-            ok
-    end,
-    modify_path(maybe_split_path(Path), Kind, Action, get(rev)),
+track_paths(#change{action=Action, kind=Kind, path=Path, md5=MD5}) ->
+    modify_path(maybe_split_path(Path), Kind, Action, get(rev), MD5),
     ok;
 track_paths(_R) ->
     ok.
@@ -639,13 +635,30 @@ maybe_split_path(P) when is_binary(P) ->
 maybe_split_path(P) ->
     P.
 
-update_md5(#change{data=Data, md5=OldMD5}=R)
-  when is_binary(Data) ->
-    MD5 = << <<(hexchar(B div 16)), (hexchar(B rem 16))>>
-           || <<B>> <= erlang:md5(Data) >>,
-    R#change{md5 = MD5};
+%% recompute md5 sums to match actual content in case it's been modified
+update_md5(#change{action=Action0, data=Data}=R) ->
+    Action = case Action0 of
+                 {add, FromPath, FromRev, _} ->
+                     case find_node(maybe_split_path(FromPath), FromRev) of
+                         Node when is_tuple(Node) ->
+                             %% no MD5 on directories
+                             {add, FromPath, FromRev, undefined};
+                         FromMD5 ->
+                             {add, FromPath, FromRev, FromMD5}
+                     end;
+                 _ ->
+                     Action0
+             end,
+    MD5 = if is_binary(Data) -> md5_bin(Data);
+             true -> undefined
+          end,
+    R#change{action=Action, md5 = MD5};
 update_md5(R) ->
     R.
+
+md5_bin(Data) ->
+    << <<(hexchar(B div 16)), (hexchar(B rem 16))>>
+     || <<B>> <= erlang:md5(Data) >>.
 
 hexchar(N) when N >= 0, N < 10 -> $0 + N;    
 hexchar(N) when N >= 10, N < 16 -> $a + N - 10.
@@ -717,14 +730,15 @@ format_record(#change{action = delete, path = Path,
 	   {node_action, delete}
 	   | Hs],
     format_record(Hs1, prop_chunk(Ps), Data);
-format_record(#change{action = {add, FromPath, FromRev}, path = Path,
-		      headers = Hs, properties = Ps,
+format_record(#change{action = {add, FromPath, FromRev, FromMD5},
+                      path = Path, headers = Hs, properties = Ps,
                       md5 = MD5, data = Data}) ->
     Hs1 = ([{node_path, flat_path(Path)},
             {node_action, add},
             {node_copyfrom_rev, FromRev},
             {node_copyfrom_path, flat_path(FromPath)}]
-           ++ [{text_copy_source_md5, MD5} || MD5 =/= undefined]
+           ++ [{text_copy_source_md5, FromMD5} || FromMD5 =/= undefined]
+           ++ [{text_content_md5, MD5} || MD5 =/= undefined]
            ++ Hs),
     format_record(Hs1, prop_chunk(Ps), Data);
 format_record(#change{action = Action, kind = Kind, path = Path,
@@ -857,68 +871,75 @@ scan_nldata(N, Bin) ->
     end.
 
 %% We need some infrastructure to keep track of valid paths, but despite the
-%% overhead, having this sanity check is well worth it, on large repos. We
-%% abuse both the process dictionary and the atom table to gain efficiency.
-%% In particular, we need to use the process dictionary to store the trees,
-%% to preserve sharing of data structures and minimize copying.
+%% overhead, having this sanity check is well worth it, in particular on
+%% large repositories, so you don't discover mistakes when you actually try
+%% to load the filtered dump (which can take a very long time). We use the
+%% process dictionary to gain efficiency, in particular, to store the trees
+%% in a way that preserves sharing of data structures.
 
-cache_bin(Bin) ->
-    erlang:binary_to_atom(Bin, latin1).
+cache_bin(Bin0) ->
+    %% we need to ensure that we don't store sub-binaries of temporary
+    %% larger binaries in the cache, which prevents the parent binary from
+    %% being garbage collected; the following trick creates a new binary
+    Bin = iolist_to_binary([Bin0]),
+    case get(Bin) of
+        undefined -> put(Bin, Bin), Bin;
+        Bin1 -> Bin1
+    end.
 
-find_tree(Path, Rev) ->
+find_node(Path, Rev) ->
     case get(Rev) of
         undefined ->
             throw({nonexisting_revision, Rev});
         Tree ->
             %% search in tree for Rev
-            find_tree(Path, Tree, Path, Rev)
+            find_node(Path, Tree, Path, Rev)
     end.
 
-find_tree([A | As], Tree, Path0, Rev) ->
+find_node([A | As], Tree, Path0, Rev) ->
     Key = cache_bin(A),
     case gb_trees:lookup(Key, Tree) of
-        {value, []} when As =:= [] ->
-            Tree;
-        {value,[]} ->
-            throw({not_a_directory, A, As, Path0, Rev});
-        {value, SubTree} ->
-            find_tree(As, SubTree, Path0, Rev);
+        {value, SubTree} when is_tuple(SubTree) ->
+            find_node(As, SubTree, Path0, Rev);
+        {value, File} ->
+            if As =:= [] -> File;
+               true -> throw({not_a_directory, A, As, Path0, Rev})
+            end;
         none ->
-            throw({missing_parent_directory, A, As, Path0, Rev})
+            throw({no_such_file_or_directory, A, As, Path0, Rev})
     end;
-find_tree([], Tree, _, _) ->
+find_node([], Tree, _, _) ->
     Tree.
 
-%% note that you shouldn't modify any revisions other than the latest
-modify_path([], Kind, Action, Rev) ->
-    exit({modifying_empty_path, Kind, Action, Rev});
-modify_path(Path, Kind, Action, Rev) when is_integer(Rev) ->
+%% note that you shouldn't do this with any revisions other than the latest
+modify_path([], Kind, Action, Rev, _MD5) ->
+    throw({modifying_empty_path, Kind, Action, Rev});
+modify_path(Path, Kind, Action, Rev, MD5) when is_integer(Rev) ->
     case get(Rev) of
         undefined ->
             throw({nonexisting_revision, Rev});
         Tree ->
-            try modify_path_1(Path, Kind, Action, Tree) of
+            try modify_path_1(Path, Kind, Action, MD5, Tree) of
                 NewTree ->
                     put(Rev, NewTree)
             catch
                 Throw ->
-                    exit({modify_path_failed,
-                          {Throw, Path, Kind, Action, Rev}})
+                    throw({modify_path_failed,
+                           {Throw, Path, Kind, Action, Rev}})
             end
     end.
 
-modify_path_1([A], Kind, Action, Tree) ->
+modify_path_1([A], Kind, Action, MD5, Tree) ->
     Key = cache_bin(A),
     case gb_trees:lookup(Key, Tree) of
         {value, _} ->
             %% Tree already has an entry for A
             case Action of
                 add -> throw(target_exists);
-                change -> Tree;  % no need to update anything
                 _ ->
-                    %% add-with-history seems to be considered as a variant
-                    %% of replace; in both cases we must update the parent
-                    update_tree(A, Kind, Action, Tree)
+                    %% note that add-with-history seems to be considered as
+                    %% a variant of replace for existing entries
+                    update_tree(A, Kind, Action, MD5, Tree)
             end;
         none ->
             %% No entry for A in Tree
@@ -927,41 +948,70 @@ modify_path_1([A], Kind, Action, Tree) ->
                 replace -> throw(missing_target);
                 delete -> throw(missing_target);
                 _ ->
-                    %% add or add-with-history both work for new entries
-                    update_tree(A, Kind, Action, Tree)
+                    %% add or add-with-history both allowed for new entries
+                    update_tree(A, Kind, Action, MD5, Tree)
             end
     end;
-modify_path_1([A|As], Kind, Action, Tree) ->
+modify_path_1([A|As], Kind, Action, MD5, Tree) ->
     %% A is an intermediate directory in the path; it must have an entry
     %% in Tree, or something is wrong!
     Key = cache_bin(A),
     case gb_trees:lookup(Key, Tree) of
-        {value, SubTree} ->
+        {value, SubTree} when is_tuple(SubTree) ->
             %% recurse into the subtree, then update the current tree
-            NewSubTree = modify_path_1(As, Kind, Action, SubTree),
+            NewSubTree = modify_path_1(As, Kind, Action, MD5, SubTree),
             gb_trees:update(Key, NewSubTree, Tree);
+        {value, _File} ->
+            throw({not_a_directory, A, As});
         none ->
-            %% A doesn't exist in parent directory
-            throw({missing_parent_directory, A, As})
+            %% no entry for A in its parent directory
+            throw({missing_directory, A, As})
     end.
 
-update_tree(A, _Kind, delete, Tree) ->
-    Key = cache_bin(A),
-    gb_trees:delete(Key, Tree);
-update_tree(A, Kind, Action, Tree) ->
+update_tree(A, _Kind, delete, _MD5, Tree) ->
+    gb_trees:delete(cache_bin(A), Tree);
+update_tree(A, _Kind, {add, FromPath, FromRev, FromMD5}, MD5, Tree) ->
+    %% also verifies existence of copy source (exception if not found)
+    case find_node(maybe_split_path(FromPath), FromRev) of
+        TreeCopy when is_tuple(TreeCopy) ->
+            if MD5 =/= undefined ->
+                    throw({directory_copy_has_md5, A, MD5});
+               true ->
+                    gb_trees:enter(cache_bin(A), TreeCopy, Tree)
+            end;
+        FromMD5 when MD5 =:= undefined ->
+            %% a plain copy that preserves the original's MD5 sum
+            gb_trees:enter(cache_bin(A), cache_bin(FromMD5), Tree);
+        FromMD5 ->
+            %% this happens when a copy operation simultaneously inserts
+            %% text content with a different MD5 sum; the source MD5 is just
+            %% used for checking the connection backwards in this case
+            gb_trees:enter(cache_bin(A), cache_bin(MD5), Tree);
+        FileCopy ->
+            throw({md5_mismatch, FromMD5, FileCopy})
+    end;
+update_tree(A, Kind, change, MD5, Tree) ->
+    case Kind of
+        dir ->
+            %% just a directory property change; do nothing
+            Tree;
+        file when MD5 =:= undefined ->
+            %% just a file property change; do nothing
+            Tree;
+        file ->
+            %% enter new MD5
+            %% TODO: what should we do with text-deltas and delta-md5?
+            gb_trees:enter(cache_bin(A), cache_bin(MD5), Tree)
+    end;
+update_tree(A, Kind, _Action, MD5, Tree) ->
+    %% replace or add new entry
     What = case Kind of
                dir ->
-                   case Action of
-                       {add, FromPath, FromRev} ->
-                           find_tree(FromPath, FromRev);
-                       _ ->
-                           gb_trees:empty()
-                   end;
+                   gb_trees:empty();
                file ->
-                   []
+                   cache_bin(MD5)
            end,
-    Key = cache_bin(A),
-    gb_trees:enter(Key, What, Tree).
+    gb_trees:enter(cache_bin(A), What, Tree).
 
 
 %% ---- Internal unit tests ----

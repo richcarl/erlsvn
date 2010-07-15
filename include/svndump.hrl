@@ -14,9 +14,10 @@
 %% subnodes.
 -record(revision, {number, properties, headers=[], changes}).
 
-%% The `data' field can be `undefined' for actions like `delete'.
-%% The `action' field is `{add, FromPath, FromRev}' for adds with history;
-%% this will be formatted as change of type add with the headers
-%% Node-copyfrom-path and Node-copyfrom-rev. Note that the data field is not
+%% The `data' field can be `undefined' for actions like `delete'. The
+%% `action' field is `{add, FromPath, FromRev, FromMD5}' for adds with
+%% history; this will be formatted as change of type add with the headers
+%% Node-copyfrom-path, Node-copyfrom-rev, and (unless `FromMD5' is
+%% `undefined') Text-copy-source-md5. Note that the data field is not
 %% necessarily empty for an add with history!
 -record(change, {path, kind, action, properties, headers=[], md5, data}).
