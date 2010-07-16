@@ -18,6 +18,16 @@
 %% @copyright 2010 Richard Carlsson
 %% @doc Functions for working with SVN dumpfiles.
 
+%% Notes: For simplicity, paths may be represented as single binaries (as
+%% returned by the dumpfile scanner), or as lists of binaries: for example,
+%% [<<"foo">>, <<"bar">>, <<"baz">>] representing <<"foo/bar/baz">>. Also,
+%% the svn:mergeinfo property value is preprocessed by the parser, and is
+%% given as a list of {Path, Ranges} tuples, where Ranges is a list of
+%% single revision numbers and/or {From, To} revision number pairs. For
+%% example, <<"foo/trunk:1-3,5,7-11">> may be represented as
+%% [{<<"foo/trunk">>, [{1,3},5,{7-11}]}] or [{[<<"foo">>,<<"trunk">>],
+%% [{1,3},{5,5},{7-11}]}], or some other variant.
+
 -module(svndump).
 
 -behaviour(gen_server).
@@ -25,7 +35,8 @@
 %% API
 -export([filter/3, fold/3, to_terms/1]).
 -export([scan_records/1, header_vsn/1, header_default/1, header_type/1,
-	 header_name/1, format_records/1]).
+	 header_name/1, format_records/1, scan_mergeinfo/1,
+         normalize_ranges/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -375,8 +386,13 @@ scan_property(Bin) ->
 	    {Key, Rest1} = scan_nldata(scan_integer(K), Rest0),
 	    case scan_line(Rest1) of
 		{<<"V ", V/bytes>>, Rest2} ->
-		    {Val, Rest3} = scan_nldata(scan_integer(V), Rest2),
-		    {{Key, Val}, Rest3};
+                    {Val, Rest3} = scan_nldata(scan_integer(V), Rest2),
+                    case Key of
+                        <<"svn:mergeinfo">> ->
+                            {{Key, scan_mergeinfo(Val)}, Rest3};
+                        _ ->
+                            {{Key, Val}, Rest3}
+                    end;
 		X ->
 		    throw({expected_prop_value, X})
 	    end;
@@ -385,6 +401,22 @@ scan_property(Bin) ->
             {{Key, delete}, Rest1};
         _ ->
 	    throw(expected_prop_key)
+    end.
+
+scan_mergeinfo(Bin) ->
+    [{Path, [scan_range(R) || R <- Ranges]}
+     || [Path | Ranges] <- [re:split(M, ":|,")
+                            || M <- re:split(Bin, "\n")],
+        Path =/= <<"">>, Ranges =/= []].
+
+scan_range(Bin) ->
+    case re:split(Bin, "-") of
+        [R, R] ->
+            scan_integer(R);
+        [R1, R2] ->
+            {scan_integer(R1), scan_integer(R2)};
+        [R] ->
+            scan_integer(R)
     end.
 
 %% @doc Extracts all svndump records from a binary.
@@ -623,23 +655,23 @@ write_record(R0, Out) ->
         false -> file:write(Out, Data)
     end.
 
+split_path(P) when is_binary(P) ->
+    re:split(P, "/");
+split_path(P) ->
+    P.
+
 %% track and sanity check paths
 track_paths(#change{action=Action, kind=Kind, path=Path, md5=MD5}) ->
-    modify_path(maybe_split_path(Path), Kind, Action, get(rev), MD5),
+    modify_path(split_path(Path), Kind, Action, get(rev), MD5),
     ok;
 track_paths(_R) ->
     ok.
-
-maybe_split_path(P) when is_binary(P) ->
-    re:split(P, "/");
-maybe_split_path(P) ->
-    P.
 
 %% recompute md5 sums to match actual content in case it's been modified
 update_md5(#change{action=Action0, data=Data}=R) ->
     Action = case Action0 of
                  {add, FromPath, FromRev, _} ->
-                     case find_node(maybe_split_path(FromPath), FromRev) of
+                     case find_node(split_path(FromPath), FromRev) of
                          Node when is_tuple(Node) ->
                              %% no MD5 on directories
                              {add, FromPath, FromRev, undefined};
@@ -807,11 +839,52 @@ format_header(Name, Value) ->
 format_props(Ps) ->
     [format_prop(P) || P <- Ps].
 
+format_prop({<<"svn:mergeinfo">> = P, Ms}) when is_list(Ms) ->
+    format_prop({P, iolist_to_binary(format_mergeinfo(Ms))});
 format_prop({Name, delete}) ->
     [<<"D ">>, integer_to_list(byte_size(Name)), $\n, Name, $\n];
 format_prop({Name, Value}) ->
     [<<"K ">>, integer_to_list(byte_size(Name)), $\n, Name, $\n,
      <<"V ">>, integer_to_list(byte_size(Value)), $\n, Value, $\n].
+
+format_mergeinfo([{Path, Ranges}]) ->
+    [flat_path(Path), $:, format_ranges(normalize_ranges(Ranges))];
+format_mergeinfo([{Path, Ranges} | Ms]) ->
+    [flat_path(Path), $:, format_ranges(normalize_ranges(Ranges)), $\n
+     | format_mergeinfo(Ms)];
+format_mergeinfo([]) -> [].
+
+format_ranges([R]) ->
+    [format_range(R)];
+format_ranges([R | Rs]) ->
+    [format_range(R), $,, format_ranges(Rs)];
+format_ranges([]) -> [].
+
+format_range({R, R}) when is_integer(R), R >= 0 ->
+    integer_to_list(R);
+format_range({R1, R2})
+  when is_integer(R1), is_integer(R2), R1 >= 0, R2 > R1  ->
+    [integer_to_list(R1), $-, integer_to_list(R2)];
+format_range(R) when is_integer(R), R >= 0 ->
+    integer_to_list(R).
+
+normalize_ranges(Rs) ->
+    merge_ranges(lists:sort([normalize_range(R) || R <- Rs])).
+
+normalize_range({R, R}=R0) when is_integer(R), R >= 0 ->
+    R0;
+normalize_range({R1, R2}=R0)
+  when is_integer(R1), is_integer(R2), R1 >= 0, R2 > R1  ->
+    R0;
+normalize_range(R) when is_integer(R), R >= 0 ->
+    {R, R}.
+
+merge_ranges([{R1, R2}, {R3, R4} | Rs]) when (R3 - R2) =< 1 ->
+    merge_ranges([{R1, R4} | Rs]);
+merge_ranges([R | Rs]) ->
+    [R | merge_ranges(Rs)];
+merge_ranges([]) ->
+    [].
 
 scan_line(Bin) ->
     scan_line(0, Bin).
@@ -972,7 +1045,7 @@ update_tree(A, _Kind, delete, _MD5, Tree) ->
     gb_trees:delete(cache_bin(A), Tree);
 update_tree(A, _Kind, {add, FromPath, FromRev, FromMD5}, MD5, Tree) ->
     %% also verifies existence of copy source (exception if not found)
-    case find_node(maybe_split_path(FromPath), FromRev) of
+    case find_node(split_path(FromPath), FromRev) of
         TreeCopy when is_tuple(TreeCopy) ->
             if MD5 =/= undefined ->
                     throw({directory_copy_has_md5, A, MD5});
