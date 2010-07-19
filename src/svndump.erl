@@ -100,7 +100,7 @@ handle_call({apply, Fun}, _From, State) ->
             error_logger:format("last revision: ~p\n"
                                 "exception: ~p:~p\n"
                                 "stack trace: ~p\n",
-                                [get(revision_number), C, T,
+                                [get(latest_rev), C, T,
                                  erlang:get_stacktrace()]),
             {stop, error, State}
     end.
@@ -471,11 +471,9 @@ scan_record(Bin, Hs) ->
 %% If there was no such header, there should be no text content. We may get
 %% an empty binary as remainder after splitting out properties, but that
 %% doesn't automatically mean that there's text content present.
-make_text(undefined, undefined) ->
+make_text(undefined, _) ->
     undefined;
-make_text(<<>>, undefined) ->
-    undefined;
-make_text(Bin, TLen) when is_binary(Bin) ->
+make_text(TLen, Bin) when is_binary(Bin) ->
     ?assertEqual(byte_size(Bin), TLen), 
     Bin.
 
@@ -504,7 +502,7 @@ make_record(Hs, Rest) ->
              when Path =/= undefined, Action =/= undefined ->
                  #change{path = Path, kind = Kind, action = Action,
                          properties = Ps, headers = Hs1,
-                         md5 = MD5, data = make_text(Data, TLen)};
+                         md5 = MD5, data = make_text(TLen, Data)};
              #rec{type = change, info = Kind,
                   properties = Ps, content = Data, textlength = TLen,
                   path = Path, action = add, md5=MD5,
@@ -514,71 +512,83 @@ make_record(Hs, Rest) ->
                  #change{path = Path, kind = Kind,
                          action = {add, FromPath, FromRev, FromMD5},
                          properties = Ps, headers = Hs1,
-                         md5=MD5, data = make_text(Data, TLen)};
+                         md5=MD5, data = make_text(TLen, Data)};
              _ ->
                  throw({unknown_record, {R, Hs1, Rest1}})
          end,
     {R1, Rest1}.
 
 %% Note: The incoming header list is here in reverse-occurrence order
-make_record([{uuid, Id} | Hs], Hs1,
-            #rec{type = undefined}=R, Rest) ->
+make_record([{uuid, Id} | Hs], Hs1, #rec{type = T}=R, Rest) ->
+    ?assert(T =:= undefined),
     make_record(Hs, Hs1, R#rec{type = uuid, info = Id}, Rest);
 make_record([{svn_fs_dump_format_version, N} | Hs], Hs1,
-            #rec{type = undefined}=R, Rest) ->
+            #rec{type = T}=R, Rest) ->
+    ?assert(T =:= undefined),
     make_record(Hs, Hs1, R#rec{type = version, info = N}, Rest);
 make_record([{content_length, Length} | Hs], Hs1,
-            #rec{content = undefined}=R, Rest) ->
+            #rec{content = Data0}=R, Rest) ->
     %% If the record has any content, there must be a Content-length header
+    ?assert(Data0 =:= undefined),
     {Data, Rest1} = scan_nldata(Length, Rest),
     ?assertEqual(byte_size(Data), Length),
     make_record(Hs, Hs1, R#rec{content=Data}, Rest1);
 make_record([{prop_content_length, PLen} | Hs], Hs1,
-            #rec{content = Data, properties = undefined}=R, Rest)
-  when Data =/= undefined ->
+            #rec{content = Data, properties = Ps0}=R, Rest) ->
     %% If there are properties, there must be a Prop-content-length and
     %% we must have seen a Content-length so we have extracted the content
+    ?assert(Ps0 =:= undefined),
+    ?assert(PLen > 0),
+    ?assert(Data =/= undefined),
     {PData, TData} = split_binary(Data, PLen),
     ?assertEqual(byte_size(PData), PLen),
     ?assertEqual(PLen + byte_size(TData), byte_size(Data)),
     Ps = scan_properties(PData),
     make_record(Hs, Hs1, R#rec{content = TData, properties = Ps}, Rest);
 make_record([{text_content_length, TLen} | Hs], Hs1,
-            #rec{content = Data}=R, Rest)
-  when Data =/= undefined ->
-    %% Discard any text content length headers - will be recomputed on output
+            #rec{content = Data}=R, Rest) ->
+    ?assert(Data =/= undefined),
+    %% Note that text content length 0 is not the same as no text content!
     make_record(Hs, Hs1, R#rec{textlength = TLen}, Rest);
 make_record([{node_path, Path} | Hs], Hs1,
-            #rec{type = T, path = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, path = Path0}=R, Rest) ->
+    ?assert(Path0 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, path = Path}, Rest);
 make_record([{node_kind, Kind} | Hs], Hs1,
-            #rec{type = T, info = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, info = Kind0}=R, Rest) ->
+    ?assert(Kind0 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, info = Kind}, Rest);
 make_record([{node_action, Action} | Hs], Hs1,
-            #rec{type = T, action = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, action = Action0}=R, Rest) ->
+    ?assert(Action0 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, action = Action}, Rest);
 make_record([{node_copyfrom_path, FromPath} | Hs], Hs1,
-            #rec{type = T, copypath = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, copypath = FromPath0}=R, Rest) ->
+    ?assert(FromPath0 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, copypath = FromPath}, Rest);
 make_record([{node_copyfrom_rev, FromRev} | Hs], Hs1,
-            #rec{type = T, copyrev = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, copyrev = FromRev0}=R, Rest) ->
+    ?assert(FromRev0 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, copyrev = FromRev}, Rest);
 make_record([{text_content_md5, MD5} | Hs], Hs1,
-            #rec{type = T, md5 = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, md5 = MD50}=R, Rest) ->
+    ?assert(MD50 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, md5 = MD5}, Rest);
 make_record([{text_copy_source_md5, MD5} | Hs], Hs1,
-            #rec{type = T, copymd5 = undefined}=R, Rest)
-  when T =:= undefined ; T =:= change ->
+            #rec{type = T, copymd5 = MD50}=R, Rest) ->
+    ?assert(MD50 =:= undefined),
+    ?assert(T =:= undefined orelse T =:= change),
     make_record(Hs, Hs1, R#rec{type = change, copymd5 = MD5}, Rest);
 make_record([{revision_number, N} | Hs], Hs1,
-            #rec{type = undefined, info=undefined}=R, Rest) ->
-    put(revision_number, N),
+            #rec{type = T, info=N0}=R, Rest) ->
+    ?assert(T =:= undefined),
+    ?assert(N0 =:= undefined),
     make_record(Hs, Hs1, R#rec{type = revision, info = N}, Rest);
 make_record([H | Hs], Hs1, R, Rest) ->
     %% other headers are just collected in order of occurrence
@@ -598,7 +608,6 @@ make_record([], Hs, R, Rest) ->
 %% (always #version), no output will be written.
 
 filter(Infile, Fun, State0) ->
-    %% TODO: this function should really just take a file descriptor
     Outfile = Infile ++ ".filtered",
     Out = open_outfile(Outfile),
     Fun1 = fun (R, St) ->
@@ -609,17 +618,16 @@ filter(Infile, Fun, State0) ->
                            %% executed by a separate process)
                            put(dry_run, false),
                            put(update_md5, true),
-                           put(rev, 0),  % initialize 'latest revision'
+                           put(latest_rev, 0),
                            %% map revision 0 to the empty tree
                            put(0, gb_trees:empty()),
                            ok;
                        #revision{number=N} ->
                            %% map the new revision to the same path tree as
                            %% the previous revision
-                           put(N, get(get(rev))),
-                           %% update the current revison (note that this is
-                           %% tracked separately from revision_number)
-                           put(rev, N);
+                           put(N, get(get(latest_rev))),
+                           %% update the latest revison number
+                           put(latest_rev, N);
                        _ ->
                            ok
                    end,
@@ -662,7 +670,7 @@ split_path(P) ->
 
 %% track and sanity check paths
 track_paths(#change{action=Action, kind=Kind, path=Path, md5=MD5}) ->
-    modify_path(split_path(Path), Kind, Action, get(rev), MD5),
+    modify_path(split_path(Path), Kind, Action, get(latest_rev), MD5),
     ok;
 track_paths(_R) ->
     ok.
@@ -755,7 +763,7 @@ format_record(#version{number = N}) ->
 format_record(#uuid{id = Id}) ->
     [format_header(uuid, Id), $\n];
 format_record(#revision{number = N, properties = Ps}) ->
-    format_record([{revision_number, N}], prop_chunk(Ps), <<>>);
+    format_record([{revision_number, N}], prop_chunk(Ps), undefined);
 format_record(#change{action = delete, path = Path,
 		      headers = Hs, properties = Ps, data = Data}) ->
     Hs1 = [{node_path, flat_path(Path)},
@@ -786,27 +794,27 @@ format_record(#change{action = Action, kind = Kind, path = Path,
 
 format_record(Hs, undefined, undefined) ->
     [[format_header(H) || H <- Hs],
-     [format_header(content_length, 0),  %% we always include this header
+     [format_header(content_length, 0),  %% always include this header
       $\n]];
 format_record(Hs, undefined, Text) ->
     TLen = byte_size(Text),
     [[format_header(H) || H <- Hs],
-     [format_header(text_content_length, TLen) || TLen > 0],
-     [format_header(content_length, TLen),
+     [format_header(text_content_length, TLen),
+      format_header(content_length, TLen),
       $\n, Text, $\n]];
 format_record(Hs, Props, undefined) ->
     PLen = byte_size(Props), 
     [[format_header(H) || H <- Hs],
-     [format_header(prop_content_length, PLen) || PLen > 0],
-     [format_header(content_length, PLen),
+     [format_header(prop_content_length, PLen),
+      format_header(content_length, PLen),
       $\n, Props, $\n]];
 format_record(Hs, Props, Text) ->
     PLen = byte_size(Props), 
     TLen = byte_size(Text),
     [[format_header(H) || H <- Hs],
-     [format_header(prop_content_length, PLen) || PLen > 0],
-     [format_header(text_content_length, TLen) || TLen > 0],
-     [format_header(content_length, PLen + TLen),
+     [format_header(prop_content_length, PLen),
+      format_header(text_content_length, TLen),
+      format_header(content_length, PLen + TLen),
       $\n, Props, Text, $\n]].
 
 flat_path(Path) when is_binary(Path) -> Path;
@@ -1073,7 +1081,7 @@ update_tree(A, Kind, change, MD5, Tree) ->
             Tree;
         file ->
             %% enter new MD5
-            %% TODO: what should we do with text-deltas and delta-md5?
+            %% TODO: we don't yet handle text-deltas and delta-md5
             gb_trees:enter(cache_bin(A), cache_bin(MD5), Tree)
     end;
 update_tree(A, Kind, _Action, MD5, Tree) ->
