@@ -36,7 +36,7 @@
 -export([filter/3, fold/3, to_terms/1]).
 -export([scan_records/1, header_vsn/1, header_default/1, header_type/1,
 	 header_name/1, format_records/1, scan_mergeinfo/1,
-         normalize_ranges/1]).
+         normalize_ranges/1, join_path/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -766,17 +766,17 @@ format_record(#revision{number = N, properties = Ps}) ->
     format_record([{revision_number, N}], prop_chunk(Ps), undefined);
 format_record(#change{action = delete, path = Path,
 		      headers = Hs, properties = Ps, data = Data}) ->
-    Hs1 = [{node_path, flat_path(Path)},
+    Hs1 = [{node_path, join_path(Path)},
 	   {node_action, delete}
 	   | Hs],
     format_record(Hs1, prop_chunk(Ps), Data);
 format_record(#change{action = {add, FromPath, FromRev, FromMD5},
                       path = Path, headers = Hs, properties = Ps,
                       md5 = MD5, data = Data}) ->
-    Hs1 = ([{node_path, flat_path(Path)},
+    Hs1 = ([{node_path, join_path(Path)},
             {node_action, add},
             {node_copyfrom_rev, FromRev},
-            {node_copyfrom_path, flat_path(FromPath)}]
+            {node_copyfrom_path, join_path(FromPath)}]
            ++ [{text_copy_source_md5, FromMD5} || FromMD5 =/= undefined]
            ++ [{text_content_md5, MD5} || MD5 =/= undefined]
            ++ Hs),
@@ -785,7 +785,7 @@ format_record(#change{action = Action, kind = Kind, path = Path,
 		      headers = Hs, properties = Ps,
                       md5 = MD5, data = Data})
   when Kind =/= undefined, Action =/= undefined ->
-    Hs1 = ([{node_path, flat_path(Path)},
+    Hs1 = ([{node_path, join_path(Path)},
             {node_kind, Kind},
             {node_action, Action}]
            ++ [{text_content_md5, MD5} || MD5 =/= undefined]
@@ -817,14 +817,14 @@ format_record(Hs, Props, Text) ->
       format_header(content_length, PLen + TLen),
       $\n, Props, Text, $\n]].
 
-flat_path(Path) when is_binary(Path) -> Path;
-flat_path([Path]) when is_binary(Path) -> Path;
-flat_path([]) -> <<>>;
-flat_path([P | Ps]) when is_binary(P) ->
-    list_to_binary([P | flat_path_1(Ps)]).
+join_path(Path) when is_binary(Path) -> Path;
+join_path([Path]) when is_binary(Path) -> Path;
+join_path([]) -> <<>>;
+join_path([P | Ps]) when is_binary(P) ->
+    list_to_binary([P | join_path_1(Ps)]).
 
-flat_path_1([P | Ps]) -> ["/", P | flat_path_1(Ps)];
-flat_path_1([]) -> [].
+join_path_1([P | Ps]) -> ["/", P | join_path_1(Ps)];
+join_path_1([]) -> [].
 
 prop_chunk(undefined) ->
     undefined;
@@ -856,9 +856,9 @@ format_prop({Name, Value}) ->
      <<"V ">>, integer_to_list(byte_size(Value)), $\n, Value, $\n].
 
 format_mergeinfo([{Path, Ranges}]) ->
-    [flat_path(Path), $:, format_ranges(normalize_ranges(Ranges))];
+    [join_path(Path), $:, format_ranges(normalize_ranges(Ranges))];
 format_mergeinfo([{Path, Ranges} | Ms]) ->
-    [flat_path(Path), $:, format_ranges(normalize_ranges(Ranges)), $\n
+    [join_path(Path), $:, format_ranges(normalize_ranges(Ranges)), $\n
      | format_mergeinfo(Ms)];
 format_mergeinfo([]) -> [].
 
