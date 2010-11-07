@@ -36,7 +36,7 @@
 -export([filter/3, fold/3, to_terms/1]).
 -export([scan_records/1, header_vsn/1, header_default/1, header_type/1,
 	 header_name/1, format_records/1, scan_mergeinfo/1,
-         normalize_ranges/1, join_path/1]).
+         normalize_ranges/1, join_path/1, cache_bin/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
