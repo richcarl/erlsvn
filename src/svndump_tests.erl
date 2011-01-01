@@ -3,7 +3,7 @@
 %%
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @copyright 2010 Richard Carlsson
-%% @doc 
+%% @hidden
 
 -module(svndump_tests).
 

@@ -1,11 +1,9 @@
 %% ---------------------------------------------------------------------
 %% File: testfilter.erl
 %%
-%% $Id:$ 
-%%
-%% @author Richard Carlsson <richardc@klarna.com>
+%% @author Richard Carlsson <carlsson.richardc@gmail.com>
 %% @copyright 2010 Richard Carlsson
-%% @doc 
+%% @doc Minimal filter example for svndump.erl.
 
 -module(testfilter).
 
@@ -18,6 +16,8 @@
 %%
 %% The accumulator is an integer count of the number of revision records
 %% seen; typically initialized to 0.
+
+%% @spec f(Record::term(), Accumulator::integer()) -> integer()
 
 f(#change{action=_Action, kind=_Kind, path=_Path, headers=_Hs,
           properties=_Ps, data=_Data}=R,

@@ -1,0 +1,10 @@
+@doc The erlsvn application allows you to do advanced rewriting of a
+Subversion dump file.
+
+Erlsvn basically tracks the entire Subversion history while processing the
+input, in order to ensure that the new dump file is self-consistent and can
+be successfully loaded into a repository.
+
+Use the {@link testfilter} and {@link svndump_filter} modules as a starting
+point for writing your own filter functions. The data structures are
+described in the `include/svndump.hrl' file.

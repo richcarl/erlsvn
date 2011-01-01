@@ -14,9 +14,9 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% @author Richard Carlsson <richardc@klarna.com>
+%% @author Richard Carlsson <carlsson.richardc@gmail.com>
 %% @copyright 2010 Richard Carlsson
-%% @doc Functions for working with SVN dumpfiles.
+%% @doc Library for working with SVN dumpfiles.
 
 %% Notes: For simplicity, paths may be represented as single binaries (as
 %% returned by the dumpfile scanner), or as lists of binaries: for example,
@@ -72,6 +72,7 @@ start_link(File) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %% ---------------------------------------------------------------------
+%% @private
 init([File]) ->
     {ok, FD} = file:open(File, [read,raw,binary]),
     put(eof, false),
@@ -87,6 +88,7 @@ init([File]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %% ---------------------------------------------------------------------
+%% @private
 handle_call({apply, Fun}, _From, State) ->
     try
         Reply = Fun(),
@@ -111,6 +113,7 @@ handle_call({apply, Fun}, _From, State) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %% ---------------------------------------------------------------------
+%% @private
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
@@ -120,6 +123,7 @@ handle_cast(stop, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %% ---------------------------------------------------------------------
+%% @private
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -130,6 +134,7 @@ handle_info(_Info, State) ->
 %% cleaning up. When it returns, the gen_server terminates with Reason.
 %% The return value is ignored.
 %% ---------------------------------------------------------------------
+%% @private
 terminate(_Reason, _State) ->
     ok.
 
@@ -137,6 +142,7 @@ terminate(_Reason, _State) ->
 %% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
 %% Description: Convert process state when code is changed
 %% ---------------------------------------------------------------------
+%% @private
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
@@ -247,9 +253,9 @@ scan_header(<<"Prop-content-length: ", B/bytes>>) ->
 scan_header(<<"Revision-number: ", B/bytes>>) ->
     {revision_number, scan_integer(B)}; % number of revision record
 scan_header(<<"Text-delta: ", B/bytes>>) ->
-    {text_delta, scan_bool(B)}; % contents treated as delta
+    {text_delta, scan_boolean(B)}; % contents treated as delta
 scan_header(<<"Prop-delta: ", B/bytes>>) ->
-    {prop_delta, scan_bool(B)}; % contents treated as delta
+    {prop_delta, scan_boolean(B)}; % contents treated as delta
 scan_header(<<"Text-delta-base-md5: ", B/bytes>>) ->
     {text_delta_base_md5, B}; % checksum of base for delta
 scan_header(<<"Text-delta-base-sha1: ", B/bytes>>) ->
@@ -269,8 +275,8 @@ scan_header(<<"SVN-fs-dump-format-version: ", B/bytes>>) ->
 scan_header(Line) ->
     throw({unknown_header, Line}).
 
-scan_bool(<<"true">>) -> true;
-scan_bool(<<"false">>) -> false.
+scan_boolean(<<"true">>) -> true;
+scan_boolean(<<"false">>) -> false.
 
 scan_node_kind(<<"file">>) -> file;
 scan_node_kind(<<"dir">>) -> dir.
@@ -281,8 +287,9 @@ scan_node_action(<<"delete">>) -> delete;
 scan_node_action(<<"replace">>) -> replace.
 
 scan_integer(B) -> list_to_integer(binary_to_list(B)).
-    
-%% @doc Yields the minimum svndump version for a header.
+
+%% @spec header_vsn(Header::atom()) -> integer()
+%% @doc Yields the minimum svndump version (1-3) for a header.
 header_vsn(svn_fs_dump_format_version) -> 1;
 header_vsn(content_length) -> 1;
 header_vsn(node_path) -> 1;
@@ -303,6 +310,7 @@ header_vsn(text_delta_base_sha1) -> 3;
 header_vsn(text_copy_source_sha1) -> 3;
 header_vsn(text_content_sha1) -> 3.
 
+%% @spec header_default(Header::atom()) -> integer() | atom() | binary()
 %% @doc Yields the default value for a header.
 header_default(svn_fs_dump_format_version) -> 0;
 header_default(content_length) -> 0;
@@ -324,6 +332,7 @@ header_default(text_delta_base_sha1) -> <<>>;
 header_default(text_copy_source_sha1) -> <<>>;
 header_default(text_content_sha1) -> <<>>.
 
+%% @spec header_type(Header::atom()) -> atom | binary | boolean | integer
 %% @doc Yields the type of value for a header.
 header_type(svn_fs_dump_format_version) -> integer;
 header_type(content_length) -> integer;
@@ -338,13 +347,14 @@ header_type(revision_number) -> integer;
 header_type(text_copy_source_md5) -> binary;
 header_type(text_content_md5) -> binary;
 header_type(uuid) -> binary;
-header_type(text_delta) -> bool;
-header_type(prop_delta) -> bool;
+header_type(text_delta) -> boolean;
+header_type(prop_delta) -> boolean;
 header_type(text_delta_base_md5) -> binary;
 header_type(text_delta_base_sha1) -> binary;
 header_type(text_copy_source_sha1) -> binary;
 header_type(text_content_sha1) -> binary.
 
+%% @spec header_name(Header::atom()) -> binary()
 %% @doc Yields the name for a header.
 header_name(content_length) -> <<"Content-length">>;
 header_name(node_path) -> <<"Node-path">>;
@@ -403,6 +413,10 @@ scan_property(Bin) ->
 	    throw(expected_prop_key)
     end.
 
+%% @type range() = integer() | {integer(),integer()}
+%% @spec scan_mergeinfo(binary()) -> [{Path::binary(), [range()]}]
+%% @doc Extracts symbolic merge information from an `svn:mergeinfo'
+%% property body.
 scan_mergeinfo(Bin) ->
     [{Path, [scan_range(R) || R <- Ranges]}
      || [Path | Ranges] <- [re:split(M, ":|,")
@@ -419,6 +433,7 @@ scan_range(Bin) ->
             scan_integer(R)
     end.
 
+%% @spec scan_records(binary()) -> [term()]
 %% @doc Extracts all svndump records from a binary.
 scan_records(Bin) ->
     scan_records(Bin, []).
@@ -596,16 +611,21 @@ make_record([H | Hs], Hs1, R, Rest) ->
 make_record([], Hs, R, Rest) ->
     {R, Hs, Rest}.
 
+
+%% @spec filter(Infile::string(), Fun::function(), State0::term()) -> term()
 %% @doc Applies a filter function (really map/fold/filter) to all records of
 %% an SVN dump file. The new file gets the name of the input file with the
-%% suffix ".filtered". The function gets a record and the current state, and
-%% should return either `{true, NewState}' or`{true, NewRecord, NewState}'
-%% if the (possibly modified) record should be kept, or `{false, NewState}'
-%% if the record should be omitted from the output. `NewRecord' can also be
-%% a list of records, typically for splitting or duplicating a change,
-%% creating missing paths, and so on. The function returns the final state.
-%% If the user does `put(dry_run, true)' in the handling of the first record
-%% (always #version), no output will be written.
+%% suffix ".filtered".
+%%
+%% The filter function gets a record and the current state, and should
+%% return either `{true, NewState}' or`{true, NewRecord, NewState}' if the
+%% (possibly modified) record should be kept, or `{false, NewState}' if the
+%% record should be omitted from the output. `NewRecord' can also be a list
+%% of records, typically for splitting or duplicating a change, creating
+%% missing paths, and so on. The result of the call to `filter/3' is the
+%% final state. If the filter function evaluates `put(dry_run, true)' while
+%% handling the first record (this is always the `#version{}' record), no
+%% output will be written.
 
 filter(Infile, Fun, State0) ->
     Outfile = Infile ++ ".filtered",
@@ -703,9 +723,11 @@ md5_bin(Data) ->
 hexchar(N) when N >= 0, N < 10 -> $0 + N;    
 hexchar(N) when N >= 10, N < 16 -> $a + N - 10.
 
+%% @spec fold(Infile::string(), Fun::function(), State0::term()) -> term()
 %% @doc Applies a fold function to all records of an SVN dump file. The
-%% function gets a record and the current state, and should return the new
-%% state. The function returns the final state.
+%% fold function gets a record and the current state, and should return the
+%% new state. The result of the call to `fold/3' is the final state.
+
 fold(Infile, Fun, State0) ->
     %% runs in separate server process
     with_infile(Infile,
@@ -727,9 +749,11 @@ fold_1(Bin, Fun, State) ->
             end
     end.
 
+%% @spec to_terms(Infile::string()) -> ok
 %% @doc Rewrites an SVN dump file to Erlang term format. The new file gets
 %% the name of the input file with the suffix ".terms", and can be read
 %% back using the Erlang standard library function file:consult().
+
 to_terms(Infile) ->
     Outfile = Infile ++ ".terms",
     Out = open_outfile(Outfile),
@@ -754,6 +778,8 @@ to_terms(Bin, Out) ->
 	    end
     end.
 
+
+%% @spec format_records([term()]) -> iolist()
 %% @doc Formats a list of records for output to an svndump file.
 format_records(Rs) ->
     [format_record(R) || R <- Rs].
@@ -817,11 +843,15 @@ format_record(Hs, Props, Text) ->
       format_header(content_length, PLen + TLen),
       $\n, Props, Text, $\n]].
 
-join_path(Path) when is_binary(Path) -> Path;
-join_path([Path]) when is_binary(Path) -> Path;
+%% @spec join_path(Path) -> binary()
+%%  where Path = binary() | [binary()]
+%% @doc Joins two paths, as represented by this module. Exported so that it
+%% may be called from filter functions.
+
 join_path([]) -> <<>>;
-join_path([P | Ps]) when is_binary(P) ->
-    list_to_binary([P | join_path_1(Ps)]).
+join_path([Path]) when is_binary(Path) -> Path;
+join_path([P | Ps]) -> list_to_binary([P | join_path_1(Ps)]);
+join_path(Path) when is_binary(Path) -> Path.
 
 join_path_1([P | Ps]) -> ["/", P | join_path_1(Ps)];
 join_path_1([]) -> [].
@@ -876,6 +906,8 @@ format_range({R1, R2})
 format_range(R) when is_integer(R), R >= 0 ->
     integer_to_list(R).
 
+%% @spec normalize_ranges([range()]) -> [range()]
+%% @doc Ensures that `svn:mergeinfo' ranges is in the expected normal form.
 normalize_ranges(Rs) ->
     merge_ranges(lists:sort([normalize_range(R) || R <- Rs])).
 
@@ -958,7 +990,11 @@ scan_nldata(N, Bin) ->
 %% process dictionary to gain efficiency, in particular, to store the trees
 %% in a way that preserves sharing of data structures.
 
-cache_bin(Bin0) ->
+%% @spec cache_bin(binary()) -> binary()
+%% @doc Ensures that the given binary is cached, and returns the cached
+%% copy. Exported so that it may be called from filter functions.
+
+cache_bin(Bin0) when is_binary(Bin0) ->
     %% we need to ensure that we don't store sub-binaries of temporary
     %% larger binaries in the cache, which prevents the parent binary from
     %% being garbage collected; the following trick creates a new binary
