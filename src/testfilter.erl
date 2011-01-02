@@ -3,7 +3,7 @@
 %%
 %% @author Richard Carlsson <carlsson.richardc@gmail.com>
 %% @copyright 2010 Richard Carlsson
-%% @doc Minimal filter example for svndump.erl.
+%% @doc Minimal filter example for svndump.erl. For details, see the code.
 
 -module(testfilter).
 

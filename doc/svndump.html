@@ -1,0 +1,137 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<title>Module svndump</title>
+<link rel="stylesheet" type="text/css" href="stylesheet.css" title="EDoc">
+</head>
+<body bgcolor="white">
+<div class="navbar"><a name="#navbar_top"></a><table width="100%" border="0" cellspacing="0" cellpadding="2" summary="navigation bar"><tr><td><a href="overview-summary.html" target="overviewFrame">Overview</a></td><td><a href="http://www.erlang.org/"><img src="erlang.png" align="right" border="0" alt="erlang logo"></a></td></tr></table></div>
+<hr>
+
+<h1>Module svndump</h1>
+<ul class="index"><li><a href="#description">Description</a></li><li><a href="#types">Data Types</a></li><li><a href="#index">Function Index</a></li><li><a href="#functions">Function Details</a></li></ul>Library for working with SVN dumpfiles.
+<p>Copyright © 2010 Richard Carlsson</p>
+
+<p><b>Behaviours:</b> <a href="gen_server.html"><tt>gen_server</tt></a>.</p>
+<p><b>Authors:</b> Richard Carlsson (<a href="mailto:carlsson.richardc@gmail.com"><tt>carlsson.richardc@gmail.com</tt></a>).</p>
+
+<h2><a name="description">Description</a></h2>Library for working with SVN dumpfiles. The main entry points are
+  the functions <a href="#filter-3"><code>filter/3</code></a>, <a href="#fold-3"><code>fold/3</code></a>, and <a href="#to_terms-1"><code>to_terms/1</code></a>.
+<h2><a name="types">Data Types</a></h2>
+
+<h3 class="typedecl"><a name="type-range">range()</a></h3>
+<p><tt>range() = integer() | {integer(), integer()}</tt></p>
+
+
+<h2><a name="index">Function Index</a></h2>
+<table width="100%" border="1" cellspacing="0" cellpadding="2" summary="function index"><tr><td valign="top"><a href="#cache_bin-1">cache_bin/1</a></td><td>Ensures that the given binary is cached, and returns the cached
+  copy.</td></tr>
+<tr><td valign="top"><a href="#filter-3">filter/3</a></td><td>Applies a filter function (really map/fold/filter) to all records of  
+an SVN dump file.</td></tr>
+<tr><td valign="top"><a href="#fold-3">fold/3</a></td><td>Applies a fold function to all records of an SVN dump file.</td></tr>
+<tr><td valign="top"><a href="#format_records-1">format_records/1</a></td><td>Formats a list of records for output to an svndump file.</td></tr>
+<tr><td valign="top"><a href="#header_default-1">header_default/1</a></td><td>Yields the default value for a header.</td></tr>
+<tr><td valign="top"><a href="#header_name-1">header_name/1</a></td><td>Yields the name for a header.</td></tr>
+<tr><td valign="top"><a href="#header_type-1">header_type/1</a></td><td>Yields the type of value for a header.</td></tr>
+<tr><td valign="top"><a href="#header_vsn-1">header_vsn/1</a></td><td>Yields the minimum svndump version (1-3) for a header.</td></tr>
+<tr><td valign="top"><a href="#join_path-1">join_path/1</a></td><td>Joins two paths, as represented by this module.</td></tr>
+<tr><td valign="top"><a href="#normalize_ranges-1">normalize_ranges/1</a></td><td>Ensures that <code>svn:mergeinfo</code> ranges is in the expected normal form.</td></tr>
+<tr><td valign="top"><a href="#scan_mergeinfo-1">scan_mergeinfo/1</a></td><td>Extracts symbolic merge information from an <code>svn:mergeinfo</code>
+  property body.</td></tr>
+<tr><td valign="top"><a href="#scan_records-1">scan_records/1</a></td><td>Extracts all svndump records from a binary.</td></tr>
+<tr><td valign="top"><a href="#to_terms-1">to_terms/1</a></td><td>Rewrites an SVN dump file to Erlang term format.</td></tr>
+</table>
+
+<h2><a name="functions">Function Details</a></h2>
+
+<h3 class="function"><a name="cache_bin-1">cache_bin/1</a></h3>
+<div class="spec">
+<p><tt>cache_bin(Bin0::binary()) -&gt; binary()</tt></p>
+</div><p>Ensures that the given binary is cached, and returns the cached
+  copy. Exported so that it may be called from filter functions.</p>
+
+<h3 class="function"><a name="filter-3">filter/3</a></h3>
+<div class="spec">
+<p><tt>filter(Infile::string(), Fun::function(), State0::term()) -&gt; term()</tt></p>
+</div><p><p>Applies a filter function (really map/fold/filter) to all records of  
+an SVN dump file. The new file gets the name of the input file with the  
+suffix ".filtered".</p>
+ 
+  The filter function gets a record and the current state, and should
+  return either <code>{true, NewState}</code> or<code>{true, NewRecord, NewState}</code> if the
+  (possibly modified) record should be kept, or <code>{false, NewState}</code> if the
+  record should be omitted from the output. <code>NewRecord</code> can also be a list
+  of records, typically for splitting or duplicating a change, creating
+  missing paths, and so on. The result of the call to <code>filter/3</code> is the
+  final state. If the filter function evaluates <code>put(dry_run, true)</code> while
+  handling the first record (this is always the <code>#version{}</code> record), no
+  output will be written.</p>
+
+<h3 class="function"><a name="fold-3">fold/3</a></h3>
+<div class="spec">
+<p><tt>fold(Infile::string(), Fun::function(), State0::term()) -&gt; term()</tt></p>
+</div><p>Applies a fold function to all records of an SVN dump file. The
+  fold function gets a record and the current state, and should return the
+  new state. The result of the call to <code>fold/3</code> is the final state.</p>
+
+<h3 class="function"><a name="format_records-1">format_records/1</a></h3>
+<div class="spec">
+<p><tt>format_records(Rs::[term()]) -&gt; <a href="#type-iolist">iolist()</a></tt></p>
+</div><p>Formats a list of records for output to an svndump file.</p>
+
+<h3 class="function"><a name="header_default-1">header_default/1</a></h3>
+<div class="spec">
+<p><tt>header_default(Header::atom()) -&gt; integer() | atom() | binary()</tt></p>
+</div><p>Yields the default value for a header.</p>
+
+<h3 class="function"><a name="header_name-1">header_name/1</a></h3>
+<div class="spec">
+<p><tt>header_name(Header::atom()) -&gt; binary()</tt></p>
+</div><p>Yields the name for a header.</p>
+
+<h3 class="function"><a name="header_type-1">header_type/1</a></h3>
+<div class="spec">
+<p><tt>header_type(Header::atom()) -&gt; atom | binary | boolean | integer</tt></p>
+</div><p>Yields the type of value for a header.</p>
+
+<h3 class="function"><a name="header_vsn-1">header_vsn/1</a></h3>
+<div class="spec">
+<p><tt>header_vsn(Header::atom()) -&gt; integer()</tt></p>
+</div><p>Yields the minimum svndump version (1-3) for a header.</p>
+
+<h3 class="function"><a name="join_path-1">join_path/1</a></h3>
+<div class="spec">
+<p><tt>join_path(Ps::Path) -&gt; binary()</tt>
+<ul class="definitions"><li><tt>Path = binary() | [binary()]</tt></li>
+</ul></p>
+</div><p>Joins two paths, as represented by this module. Exported so that it
+  may be called from filter functions.</p>
+
+<h3 class="function"><a name="normalize_ranges-1">normalize_ranges/1</a></h3>
+<div class="spec">
+<p><tt>normalize_ranges(Rs::[<a href="#type-range">range()</a>]) -&gt; [<a href="#type-range">range()</a>]</tt></p>
+</div><p>Ensures that <code>svn:mergeinfo</code> ranges is in the expected normal form.</p>
+
+<h3 class="function"><a name="scan_mergeinfo-1">scan_mergeinfo/1</a></h3>
+<div class="spec">
+<p><tt>scan_mergeinfo(Bin::binary()) -&gt; [{Path::binary(), [<a href="#type-range">range()</a>]}]</tt></p>
+</div><p>Extracts symbolic merge information from an <code>svn:mergeinfo</code>
+  property body.</p>
+
+<h3 class="function"><a name="scan_records-1">scan_records/1</a></h3>
+<div class="spec">
+<p><tt>scan_records(Bin::binary()) -&gt; [term()]</tt></p>
+</div><p>Extracts all svndump records from a binary.</p>
+
+<h3 class="function"><a name="to_terms-1">to_terms/1</a></h3>
+<div class="spec">
+<p><tt>to_terms(Infile::string()) -&gt; ok</tt></p>
+</div><p>Rewrites an SVN dump file to Erlang term format. The new file gets
+  the name of the input file with the suffix ".terms", and can be read
+  back using the Erlang standard library function file:consult().</p>
+<hr>
+
+<div class="navbar"><a name="#navbar_bottom"></a><table width="100%" border="0" cellspacing="0" cellpadding="2" summary="navigation bar"><tr><td><a href="overview-summary.html" target="overviewFrame">Overview</a></td><td><a href="http://www.erlang.org/"><img src="erlang.png" align="right" border="0" alt="erlang logo"></a></td></tr></table></div>
+<p><i>Generated by EDoc, Jan 2 2011, 14:18:47.</i></p>
+</body>
+</html>

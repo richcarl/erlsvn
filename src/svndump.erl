@@ -16,7 +16,8 @@
 %%
 %% @author Richard Carlsson <carlsson.richardc@gmail.com>
 %% @copyright 2010 Richard Carlsson
-%% @doc Library for working with SVN dumpfiles.
+%% @doc Library for working with SVN dumpfiles. The main entry points are
+%% the functions {@link filter/3}, {@link fold/3}, and {@link to_terms/1}.
 
 %% Notes: For simplicity, paths may be represented as single binaries (as
 %% returned by the dumpfile scanner), or as lists of binaries: for example,
